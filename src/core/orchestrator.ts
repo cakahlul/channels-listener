@@ -55,13 +55,18 @@ export class Orchestrator {
         this.registry.register(session.sessionId, toDiscordChannelId(context.sessionKey));
       }
 
-      logger.info(`[${context.platform}] ${context.userName}: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`);
+      logger.info(`[${context.platform}] ${context.userName}: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""} (${msg.attachments?.length ?? 0} images)`);
 
-      const response = await this.bridge.ask(text, session.sessionId, session.isNew);
+      const response = await this.bridge.ask(
+        text,
+        session.sessionId,
+        session.isNew,
+        msg.attachments,
+      );
 
-      logger.info(`[${context.platform}] Reply to ${context.userName}: ${response.slice(0, 100)}${response.length > 100 ? "..." : ""}`);
+      logger.info(`[${context.platform}] Reply to ${context.userName}: ${response.text.slice(0, 100)}${response.text.length > 100 ? "..." : ""} (${response.imageFiles.length} images)`);
 
-      await reply(response);
+      await reply(response.text, response.imageFiles);
     } catch (err) {
       logger.error(`Error handling message from ${context.userName}:`, err);
       await reply("Sorry, something went wrong processing your message. Please try again.");

@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   ChannelType,
   Client,
   Events,
@@ -9,10 +10,18 @@ import {
   type ThreadChannel,
 } from "discord.js";
 import type { Channel, InboundMessage, ReplySender } from "../types/channel";
+import type { Attachment } from "../core/claude-bridge";
 import type { Config } from "../config";
 import { logger } from "../utils/logger";
+import { basename } from "path";
 
 const MAX_MESSAGE_LENGTH = 2000;
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
 
 /** Split a long message into chunks. */
 function splitMessage(text: string, limit = MAX_MESSAGE_LENGTH): string[] {
@@ -52,6 +61,82 @@ function isThread(type: ChannelType): boolean {
     type === ChannelType.PrivateThread ||
     type === ChannelType.AnnouncementThread
   );
+}
+
+/** Download Discord attachments as base64 Attachment objects. */
+async function downloadImageAttachments(message: Message): Promise<Attachment[]> {
+  const images: Attachment[] = [];
+
+  for (const att of message.attachments.values()) {
+    const contentType = att.contentType ?? "";
+    if (!SUPPORTED_IMAGE_TYPES.has(contentType)) continue;
+
+    try {
+      const res = await fetch(att.url);
+      if (!res.ok) continue;
+      const buffer = await res.arrayBuffer();
+      const data = Buffer.from(buffer).toString("base64");
+      images.push({ data, mediaType: contentType });
+      logger.debug(`[discord] Downloaded attachment ${att.name} (${contentType}, ${Math.round(buffer.byteLength / 1024)}KB)`);
+    } catch (err) {
+      logger.warn(`[discord] Failed to download attachment ${att.name}:`, err);
+    }
+  }
+
+  return images;
+}
+
+/** Download image attachments from raw DM event data. */
+async function downloadRawAttachments(rawAttachments: any[]): Promise<Attachment[]> {
+  if (!rawAttachments?.length) return [];
+
+  const images: Attachment[] = [];
+  for (const att of rawAttachments) {
+    const contentType: string = att.content_type ?? "";
+    if (!SUPPORTED_IMAGE_TYPES.has(contentType)) continue;
+
+    try {
+      const res = await fetch(att.url);
+      if (!res.ok) continue;
+      const buffer = await res.arrayBuffer();
+      const data = Buffer.from(buffer).toString("base64");
+      images.push({ data, mediaType: contentType });
+      logger.debug(`[discord] Downloaded DM attachment ${att.filename} (${contentType})`);
+    } catch (err) {
+      logger.warn(`[discord] Failed to download DM attachment:`, err);
+    }
+  }
+
+  return images;
+}
+
+/** Create a ReplySender for a sendable channel that supports image files. */
+function makeReplySender(channel: { send: Function }): ReplySender {
+  return async (responseText: string, imageFiles?: string[]) => {
+    const chunks = splitMessage(responseText);
+    for (const chunk of chunks) {
+      await channel.send(chunk);
+    }
+
+    // Send image files as Discord attachments
+    if (imageFiles?.length) {
+      const files: AttachmentBuilder[] = [];
+      for (const filePath of imageFiles) {
+        try {
+          const file = Bun.file(filePath);
+          if (await file.exists()) {
+            const buffer = Buffer.from(await file.arrayBuffer());
+            files.push(new AttachmentBuilder(buffer, { name: basename(filePath) }));
+          }
+        } catch (err) {
+          logger.warn(`[discord] Failed to read image file ${filePath}:`, err);
+        }
+      }
+      if (files.length) {
+        await channel.send({ files });
+      }
+    }
+  };
 }
 
 export class DiscordChannel implements Channel {
@@ -102,9 +187,10 @@ export class DiscordChannel implements Channel {
           if (thread.ownerId !== botId) return;
 
           const text = stripMention(message.content, botId);
-          if (!text) return;
+          if (!text && message.attachments.size === 0) return;
 
-          logger.debug(`[discord] Thread message from ${message.author.username} in ${thread.name}: ${text.slice(0, 100)}`);
+          const attachments = await downloadImageAttachments(message);
+          logger.debug(`[discord] Thread message from ${message.author.username} in ${thread.name}: ${text.slice(0, 100)} (${attachments.length} images)`);
 
           const inbound: InboundMessage = {
             context: {
@@ -113,18 +199,12 @@ export class DiscordChannel implements Channel {
               userId: message.author.id,
               userName: message.author.username,
             },
-            text,
-          };
-
-          const reply: ReplySender = async (responseText: string) => {
-            const chunks = splitMessage(responseText);
-            for (const chunk of chunks) {
-              await thread.send(chunk);
-            }
+            text: text || "(image attached)",
+            attachments,
           };
 
           try { await thread.sendTyping(); } catch {}
-          await onMessage(inbound, reply);
+          await onMessage(inbound, makeReplySender(thread));
           return;
         }
 
@@ -133,12 +213,14 @@ export class DiscordChannel implements Channel {
         if (!isMentioned) return;
 
         const text = stripMention(message.content, botId);
-        if (!text) return;
+        if (!text && message.attachments.size === 0) return;
 
-        logger.debug(`[discord] New thread from ${message.author.username}: ${text.slice(0, 100)}`);
+        const attachments = await downloadImageAttachments(message);
+        logger.debug(`[discord] New thread from ${message.author.username}: ${text.slice(0, 100)} (${attachments.length} images)`);
 
         // Create a thread from the user's message
-        const threadName = text.slice(0, 90) + (text.length > 90 ? "..." : "");
+        const displayText = text || "(image attached)";
+        const threadName = displayText.slice(0, 90) + (displayText.length > 90 ? "..." : "");
         const thread = await (message.channel as TextChannel).threads.create({
           name: threadName,
           startMessage: message,
@@ -152,18 +234,12 @@ export class DiscordChannel implements Channel {
             userId: message.author.id,
             userName: message.author.username,
           },
-          text,
-        };
-
-        const reply: ReplySender = async (responseText: string) => {
-          const chunks = splitMessage(responseText);
-          for (const chunk of chunks) {
-            await thread.send(chunk);
-          }
+          text: displayText,
+          attachments,
         };
 
         try { await thread.sendTyping(); } catch {}
-        await onMessage(inbound, reply);
+        await onMessage(inbound, makeReplySender(thread));
       } catch (err) {
         logger.error(`[discord] Error handling guild message:`, err);
       }
@@ -180,10 +256,12 @@ export class DiscordChannel implements Channel {
         const userId = event.d.author.id as string;
         const userName = event.d.author.username as string;
         const text = (event.d.content as string).trim();
+        const rawAttachments = event.d.attachments as any[] | undefined;
 
-        if (!text) return;
+        if (!text && (!rawAttachments || rawAttachments.length === 0)) return;
 
-        logger.debug(`[discord] DM from ${userName}: ${text.slice(0, 100)}`);
+        const attachments = await downloadRawAttachments(rawAttachments ?? []);
+        logger.debug(`[discord] DM from ${userName}: ${text.slice(0, 100)} (${attachments.length} images)`);
 
         const inbound: InboundMessage = {
           context: {
@@ -192,18 +270,12 @@ export class DiscordChannel implements Channel {
             userId,
             userName,
           },
-          text,
+          text: text || "(image attached)",
+          attachments,
         };
 
         const channel = await this.client!.channels.fetch(channelId);
         if (!channel || !("send" in channel)) return;
-
-        const reply: ReplySender = async (responseText: string) => {
-          const chunks = splitMessage(responseText);
-          for (const chunk of chunks) {
-            await (channel as any).send(chunk);
-          }
-        };
 
         try {
           if ("sendTyping" in channel) {
@@ -211,7 +283,7 @@ export class DiscordChannel implements Channel {
           }
         } catch {}
 
-        await onMessage(inbound, reply);
+        await onMessage(inbound, makeReplySender(channel as any));
       } catch (err) {
         logger.error(`[discord] Error handling DM:`, err);
       }

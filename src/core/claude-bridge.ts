@@ -1,15 +1,23 @@
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { logger } from "../utils/logger";
+
+export interface Attachment {
+  /** Base64-encoded image data */
+  data: string;
+  /** MIME type: image/png, image/jpeg, image/gif, image/webp */
+  mediaType: string;
+}
+
+export interface BridgeResponse {
+  text: string;
+  /** Absolute paths to image files Claude created during this turn */
+  imageFiles: string[];
+}
 
 interface AskOptions {
   model?: string;
   maxTurns?: number;
-  timeoutMs?: number;
-}
-
-interface ClaudeResponse {
-  result: string;
-  is_error: boolean;
-  session_id: string;
 }
 
 /** Semaphore to limit concurrent Claude processes. */
@@ -39,6 +47,9 @@ class Semaphore {
   }
 }
 
+/** Regex to find image file paths in Claude's response text. */
+const IMAGE_PATH_RE = /(?:^|\s)(\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:\s|$|[)\].,])/gim;
+
 export class ClaudeBridge {
   private semaphore: Semaphore;
   private defaultModel: string;
@@ -52,71 +63,97 @@ export class ClaudeBridge {
     this.workDir = opts.workDir;
   }
 
-  async ask(prompt: string, sessionId: string, isNewSession: boolean, opts?: AskOptions): Promise<string> {
+  async ask(
+    prompt: string,
+    sessionId: string,
+    isNewSession: boolean,
+    attachments?: Attachment[],
+    opts?: AskOptions,
+  ): Promise<BridgeResponse> {
     const model = opts?.model || this.defaultModel;
     const maxTurns = opts?.maxTurns || this.defaultMaxTurns;
-    const timeoutMs = opts?.timeoutMs || 600_000;
 
-    const args = [
-      "--print",
-      "--output-format", "text",
-      "--model", model,
-      "--max-turns", String(maxTurns),
-    ];
+    // Build the message content blocks
+    const content: MessageParam["content"] = [];
 
-    if (isNewSession) {
-      args.push("--session-id", sessionId);
-    } else {
-      args.push("--resume", sessionId);
+    // Add images first
+    if (attachments?.length) {
+      for (const att of attachments) {
+        content.push({
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: att.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+            data: att.data,
+          },
+        });
+      }
     }
 
-    args.push(prompt);
+    // Add text prompt
+    content.push({ type: "text" as const, text: prompt });
 
-    logger.debug(`Spawning claude with session ${sessionId} (new=${isNewSession})`);
+    logger.debug(`Querying claude SDK session=${sessionId} (new=${isNewSession}) images=${attachments?.length ?? 0}`);
 
     await this.semaphore.acquire();
     try {
-      return await this.spawn(args, timeoutMs);
-    } finally {
-      this.semaphore.release();
-    }
-  }
+      const sdkPrompt: MessageParam = { role: "user", content };
 
-  private async spawn(args: string[], timeoutMs: number): Promise<string> {
-    const proc = Bun.spawn(["claude", ...args], {
-      cwd: this.workDir,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env },
-    });
+      const options: Parameters<typeof query>[0]["options"] = {
+        model,
+        maxTurns,
+        cwd: this.workDir,
+        permissionMode: "default",
+        ...(isNewSession
+          ? { sessionId }
+          : { resume: sessionId }),
+      };
 
-    const timeout = setTimeout(() => {
-      proc.kill();
-    }, timeoutMs);
+      let resultText = "";
+      let finalSessionId = sessionId;
 
-    try {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-
-      const exitCode = await proc.exited;
-      clearTimeout(timeout);
-
-      if (exitCode !== 0) {
-        logger.error(`Claude exited with code ${exitCode}: ${stderr}`);
-        throw new Error(`Claude process failed (exit ${exitCode}): ${stderr.slice(0, 200)}`);
+      for await (const message of query({
+        prompt: (async function* () {
+          yield {
+            type: "user" as const,
+            message: sdkPrompt,
+            parent_tool_use_id: null,
+          };
+        })(),
+        options,
+      })) {
+        if (message.type === "result") {
+          finalSessionId = message.session_id;
+          if (message.subtype === "success") {
+            resultText = message.result ?? "";
+          } else {
+            const errors = "errors" in message ? message.errors : [];
+            resultText = errors?.join("\n") || "Claude encountered an error.";
+          }
+        }
       }
 
-      const text = stdout.trim();
-      if (!text) {
+      if (!resultText) {
         throw new Error("Claude returned empty response");
       }
 
-      return text;
-    } catch (err) {
-      clearTimeout(timeout);
-      throw err;
+      // Extract image file paths from response
+      const imageFiles: string[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = IMAGE_PATH_RE.exec(resultText)) !== null) {
+        const filePath = match[1]!;
+        // Verify file actually exists before including
+        try {
+          const file = Bun.file(filePath);
+          if (await file.exists()) {
+            imageFiles.push(filePath);
+          }
+        } catch {}
+      }
+
+      return { text: resultText, imageFiles };
+    } finally {
+      this.semaphore.release();
     }
   }
 }

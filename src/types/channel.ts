@@ -1,3 +1,5 @@
+import type { Attachment } from "../core/claude-bridge";
+
 /** Uniquely identifies a conversation context across any platform. */
 export interface ChannelContext {
   platform: string;
@@ -11,11 +13,11 @@ export interface ChannelContext {
 export interface InboundMessage {
   context: ChannelContext;
   text: string;
-  attachments?: string[];
+  attachments?: Attachment[];
 }
 
 /** Sends a reply back through the originating platform. */
-export type ReplySender = (text: string) => Promise<void>;
+export type ReplySender = (text: string, imageFiles?: string[]) => Promise<void>;
 
 /** Every chat platform adapter implements this interface. */
 export interface Channel {
