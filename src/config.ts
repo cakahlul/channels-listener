@@ -7,6 +7,9 @@ export interface Config {
   sessionTtlMinutes: number;
   maxConcurrentClaude: number;
   logLevel: string;
+  approvalFallbackChannelId?: string;
+  approvalServerPort: number;
+  approvalTimeoutMs: number;
 }
 
 export function loadConfig(): Config {
@@ -24,5 +27,8 @@ export function loadConfig(): Config {
     sessionTtlMinutes: parseInt(process.env.SESSION_TTL_MINUTES || "60", 10),
     maxConcurrentClaude: parseInt(process.env.MAX_CONCURRENT_CLAUDE || "5", 10),
     logLevel: process.env.LOG_LEVEL || "info",
+    approvalFallbackChannelId: process.env.APPROVAL_FALLBACK_CHANNEL_ID,
+    approvalServerPort: parseInt(process.env.APPROVAL_SERVER_PORT || "7842", 10),
+    approvalTimeoutMs: parseInt(process.env.APPROVAL_TIMEOUT_MS || "300000", 10),
   };
 }

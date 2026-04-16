@@ -59,6 +59,12 @@ export class DiscordChannel implements Channel {
   private client: Client | null = null;
   private token: string;
 
+  /** Expose the underlying client for the approval system. Available after start(). */
+  getClient(): Client {
+    if (!this.client) throw new Error("Discord client not started yet");
+    return this.client;
+  }
+
   constructor(config: Config) {
     this.token = config.discordBotToken;
   }

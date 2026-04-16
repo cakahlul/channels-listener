@@ -1,16 +1,24 @@
 import type { Config } from "../config";
 import type { InboundMessage, ReplySender } from "../types/channel";
+import type { SessionRegistry } from "../approval/session-registry";
 import { ClaudeBridge } from "./claude-bridge";
 import { SessionStore } from "./session-store";
 import { logger } from "../utils/logger";
 
+/** Extract the Discord channel ID from a sessionKey. */
+function toDiscordChannelId(sessionKey: string): string {
+  // DM sessions use "dm:{channelId}", threads use the thread ID directly
+  return sessionKey.startsWith("dm:") ? sessionKey.slice(3) : sessionKey;
+}
+
 export class Orchestrator {
   private bridge: ClaudeBridge;
   private sessions: SessionStore;
+  private registry: SessionRegistry;
   /** Track in-flight requests per session to prevent double-sends. */
   private inFlight = new Set<string>();
 
-  constructor(config: Config) {
+  constructor(config: Config, registry: SessionRegistry) {
     this.bridge = new ClaudeBridge({
       maxConcurrent: config.maxConcurrentClaude,
       model: config.claudeModel,
@@ -18,6 +26,7 @@ export class Orchestrator {
       workDir: config.claudeWorkDir,
     });
     this.sessions = new SessionStore(config.redisUrl, config.sessionTtlMinutes);
+    this.registry = registry;
   }
 
   async handle(msg: InboundMessage, reply: ReplySender): Promise<void> {
@@ -40,6 +49,11 @@ export class Orchestrator {
 
     try {
       const session = await this.sessions.get(context.platform, context.sessionKey);
+
+      // Map the Claude session UUID to the Discord channel so approvals land here
+      if (context.platform === "discord") {
+        this.registry.register(session.sessionId, toDiscordChannelId(context.sessionKey));
+      }
 
       logger.info(`[${context.platform}] ${context.userName}: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`);
 
