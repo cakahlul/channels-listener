@@ -54,13 +54,12 @@ async function main() {
 
     const result = (await res.json()) as { decision: string; decidedBy: string };
 
-    // Output the hook response JSON for Claude Code (PermissionRequest format)
+    // Output the hook response JSON for Claude Code (PreToolUse format)
     const hookResponse = {
       hookSpecificOutput: {
-        hookEventName: "PermissionRequest",
-        decision: {
-          behavior: result.decision === "allow" ? "allow" : "deny",
-        },
+        hookEventName: "PreToolUse",
+        permissionDecision: result.decision === "allow" ? "allow" : "deny",
+        permissionDecisionReason: `${result.decision === "allow" ? "Approved" : "Denied"} via Discord by ${result.decidedBy}`,
       },
     };
 

@@ -55,7 +55,7 @@ export class ClaudeBridge {
   async ask(prompt: string, sessionId: string, isNewSession: boolean, opts?: AskOptions): Promise<string> {
     const model = opts?.model || this.defaultModel;
     const maxTurns = opts?.maxTurns || this.defaultMaxTurns;
-    const timeoutMs = opts?.timeoutMs || 120_000;
+    const timeoutMs = opts?.timeoutMs || 600_000;
 
     const args = [
       "--print",
