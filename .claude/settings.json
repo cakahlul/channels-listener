@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun --version)",
+      "Bash(bun info:*)",
+      "Bash(npm info:*)",
+      "Bash(bun init:*)",
+      "Bash(bun add:*)",
+      "Bash(bun build:*)",
+      "Bash(bunx tsc:*)"
+    ]
+  }
+}
