@@ -22,6 +22,7 @@ setLogLevel(config.logLevel);
 configureScheduler({
   timezone: config.schedulerTimezone,
   tickMs: config.schedulerTickMs,
+  claudeCodePath: config.claudeCodePath,
 });
 
 const registry = new SessionRegistry();

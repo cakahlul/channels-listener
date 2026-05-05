@@ -3,6 +3,7 @@ export interface Config {
   claudeWorkDir: string;
   claudeModel: string;
   claudeMaxTurns: number;
+  claudeCodePath?: string;
   redisUrl: string;
   sessionTtlMinutes: number;
   maxConcurrentClaude: number;
@@ -27,6 +28,7 @@ export function loadConfig(): Config {
     redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
     claudeMaxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || "25", 10),
+    claudeCodePath: process.env.CLAUDE_CODE_PATH,
     sessionTtlMinutes: parseInt(process.env.SESSION_TTL_MINUTES || "60", 10),
     maxConcurrentClaude: parseInt(process.env.MAX_CONCURRENT_CLAUDE || "5", 10),
     logLevel: process.env.LOG_LEVEL || "info",

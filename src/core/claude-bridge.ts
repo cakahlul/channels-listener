@@ -55,12 +55,14 @@ export class ClaudeBridge {
   private defaultModel: string;
   private defaultMaxTurns: number;
   private workDir: string;
+  private claudeCodePath?: string;
 
-  constructor(opts: { maxConcurrent: number; model: string; maxTurns: number; workDir: string }) {
+  constructor(opts: { maxConcurrent: number; model: string; maxTurns: number; workDir: string; claudeCodePath?: string }) {
     this.semaphore = new Semaphore(opts.maxConcurrent);
     this.defaultModel = opts.model;
     this.defaultMaxTurns = opts.maxTurns;
     this.workDir = opts.workDir;
+    this.claudeCodePath = opts.claudeCodePath;
   }
 
   async ask(
@@ -104,6 +106,7 @@ export class ClaudeBridge {
         maxTurns,
         cwd: this.workDir,
         permissionMode: "default",
+        ...(this.claudeCodePath ? { pathToClaudeCodeExecutable: this.claudeCodePath } : {}),
         ...(isNewSession
           ? { sessionId }
           : { resume: sessionId }),

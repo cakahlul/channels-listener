@@ -95,10 +95,12 @@ export interface ParsedScheduleInput {
 
 let schedulerTimezone = "Asia/Jakarta";
 let schedulerTickMs = 60_000;
+let schedulerClaudeCodePath: string | undefined;
 
-export function configureScheduler(opts: { timezone?: string; tickMs?: number }) {
+export function configureScheduler(opts: { timezone?: string; tickMs?: number; claudeCodePath?: string }) {
   if (opts.timezone) schedulerTimezone = opts.timezone;
   if (opts.tickMs) schedulerTickMs = opts.tickMs;
+  if (opts.claudeCodePath) schedulerClaudeCodePath = opts.claudeCodePath;
 }
 
 /**
@@ -153,6 +155,7 @@ User input: ${rawInput}`;
       options: {
         maxTurns: 1,
         abortController,
+        ...(schedulerClaudeCodePath ? { pathToClaudeCodeExecutable: schedulerClaudeCodePath } : {}),
       } as any,
     })) {
       if ("result" in message) {

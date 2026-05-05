@@ -30,6 +30,7 @@ export class Orchestrator {
       model: config.claudeModel,
       maxTurns: config.claudeMaxTurns,
       workDir: config.claudeWorkDir,
+      claudeCodePath: config.claudeCodePath,
     });
     this.sessions = new SessionStore(config.redisUrl, config.sessionTtlMinutes);
     this.registry = registry;
