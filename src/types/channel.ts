@@ -5,6 +5,8 @@ export interface ChannelContext {
   platform: string;
   /** Key used for session lookup. For Discord guild: threadId. For DMs: dmChannelId. */
   sessionKey: string;
+  /** Stable channel ID for grouping (e.g. schedules). For Discord: parent channel ID. For DMs: same as sessionKey. */
+  channelId: string;
   userId: string;
   userName: string;
 }

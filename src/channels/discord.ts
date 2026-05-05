@@ -229,6 +229,7 @@ export class DiscordChannel implements Channel {
             context: {
               platform: "discord",
               sessionKey: thread.id,
+              channelId: thread.parentId || thread.id,
               userId: message.author.id,
               userName: message.author.username,
             },
@@ -269,6 +270,7 @@ export class DiscordChannel implements Channel {
           context: {
             platform: "discord",
             sessionKey: thread.id,
+            channelId: message.channel.id,
             userId: message.author.id,
             userName: message.author.username,
           },
@@ -306,6 +308,7 @@ export class DiscordChannel implements Channel {
           context: {
             platform: "discord",
             sessionKey: `dm:${channelId}`,
+            channelId: `dm:${channelId}`,
             userId,
             userName,
           },

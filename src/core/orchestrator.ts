@@ -51,7 +51,7 @@ export class Orchestrator {
     const scheduleCtx: ScheduleCommandContext = {
       userName: context.userName,
       userId: context.userId,
-      channelId: context.sessionKey,
+      channelId: context.channelId,
       platform: context.platform,
       mentions: msg.mentions,
     };
