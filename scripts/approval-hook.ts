@@ -23,8 +23,10 @@ function log(msg: string) {
   } catch {}
 }
 
-// Tools that are inherently read-only — never need Discord approval
+// Tools that never need Discord approval
 const AUTO_ALLOW_TOOLS = new Set([
+  "Bash",
+  "Agent",
   "Read",
   "Glob",
   "Grep",
