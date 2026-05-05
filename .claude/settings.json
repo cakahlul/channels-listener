@@ -7,8 +7,7 @@
       "Bash(bun init:*)",
       "Bash(bun add:*)",
       "Bash(bun build:*)",
-      "Bash(bunx tsc:*)",
-      "Bash(chmod +x /Users/ahlulesasjana/labs/channels-listener/scripts/approval-hook.ts)"
+      "Bash(bunx tsc:*)"
     ]
   }
 }

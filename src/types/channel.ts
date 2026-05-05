@@ -14,6 +14,8 @@ export interface InboundMessage {
   context: ChannelContext;
   text: string;
   attachments?: Attachment[];
+  /** User mentions in the message (platform-specific). */
+  mentions?: Array<{ id: string; username: string }>;
 }
 
 /** Sends a reply back through the originating platform. */

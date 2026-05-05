@@ -10,6 +10,9 @@ export interface Config {
   approvalFallbackChannelId?: string;
   approvalServerPort: number;
   approvalTimeoutMs: number;
+  dbPath: string;
+  schedulerTimezone: string;
+  schedulerTickMs: number;
 }
 
 export function loadConfig(): Config {
@@ -30,5 +33,8 @@ export function loadConfig(): Config {
     approvalFallbackChannelId: process.env.APPROVAL_FALLBACK_CHANNEL_ID,
     approvalServerPort: parseInt(process.env.APPROVAL_SERVER_PORT || "7842", 10),
     approvalTimeoutMs: parseInt(process.env.APPROVAL_TIMEOUT_MS || "300000", 10),
+    dbPath: process.env.DB_PATH || "channels-listener.sqlite",
+    schedulerTimezone: process.env.SCHEDULER_TIMEZONE || "Asia/Jakarta",
+    schedulerTickMs: parseInt(process.env.SCHEDULER_TICK_MS || "60000", 10),
   };
 }

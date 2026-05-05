@@ -4,6 +4,7 @@ import type { SessionRegistry } from "../approval/session-registry";
 import { ClaudeBridge } from "./claude-bridge";
 import { SessionStore } from "./session-store";
 import { logger } from "../utils/logger";
+import { handleScheduleCommand, type ScheduleCommandContext } from "../services/scheduler";
 
 /** Extract the Discord channel ID from a sessionKey. */
 function toDiscordChannelId(sessionKey: string): string {
@@ -17,6 +18,11 @@ export class Orchestrator {
   private registry: SessionRegistry;
   /** Track in-flight requests per session to prevent double-sends. */
   private inFlight = new Set<string>();
+
+  /** Expose the bridge so the scheduler can invoke Claude. */
+  getBridge(): ClaudeBridge {
+    return this.bridge;
+  }
 
   constructor(config: Config, registry: SessionRegistry) {
     this.bridge = new ClaudeBridge({
@@ -37,6 +43,22 @@ export class Orchestrator {
     if (text.trim().toLowerCase() === "/reset") {
       await this.sessions.reset(context.platform, context.sessionKey);
       await reply("Session reset. Starting fresh conversation.");
+      return;
+    }
+
+    // Handle schedule commands
+    const scheduleCtx: ScheduleCommandContext = {
+      userName: context.userName,
+      userId: context.userId,
+      channelId: context.sessionKey,
+      platform: context.platform,
+      mentions: msg.mentions,
+    };
+
+    const scheduleResult = handleScheduleCommand(text, scheduleCtx, (t) => reply(t));
+    if (scheduleResult === "ASYNC") return;
+    if (scheduleResult) {
+      await reply(scheduleResult);
       return;
     }
 

@@ -150,6 +150,35 @@ export class DiscordChannel implements Channel {
     return this.client;
   }
 
+  /** Send a message to a channel by ID (used by scheduler). */
+  async sendToChannel(channelId: string, text: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !("send" in channel)) return;
+      const chunks = splitMessage(text);
+      for (const chunk of chunks) {
+        await (channel as any).send(chunk);
+      }
+    } catch (err) {
+      logger.error(`[discord] Failed to send to channel ${channelId}:`, err);
+    }
+  }
+
+  /** Send a DM to a user by ID (used by scheduler). */
+  async sendDm(userId: string, text: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const user = await this.client.users.fetch(userId);
+      const chunks = splitMessage(text);
+      for (const chunk of chunks) {
+        await user.send(chunk);
+      }
+    } catch (err) {
+      logger.error(`[discord] Failed to DM user ${userId}:`, err);
+    }
+  }
+
   constructor(config: Config) {
     this.token = config.discordBotToken;
   }
@@ -192,6 +221,10 @@ export class DiscordChannel implements Channel {
           const attachments = await downloadImageAttachments(message);
           logger.debug(`[discord] Thread message from ${message.author.username} in ${thread.name}: ${text.slice(0, 100)} (${attachments.length} images)`);
 
+          const mentions = message.mentions.users
+            .filter((u) => !u.bot)
+            .map((u) => ({ id: u.id, username: u.username }));
+
           const inbound: InboundMessage = {
             context: {
               platform: "discord",
@@ -201,6 +234,7 @@ export class DiscordChannel implements Channel {
             },
             text: text || "(image attached)",
             attachments,
+            mentions,
           };
 
           try { await thread.sendTyping(); } catch {}
@@ -227,6 +261,10 @@ export class DiscordChannel implements Channel {
           autoArchiveDuration: 60,
         });
 
+        const mentions = message.mentions.users
+          .filter((u) => !u.bot)
+          .map((u) => ({ id: u.id, username: u.username }));
+
         const inbound: InboundMessage = {
           context: {
             platform: "discord",
@@ -236,6 +274,7 @@ export class DiscordChannel implements Channel {
           },
           text: displayText,
           attachments,
+          mentions,
         };
 
         try { await thread.sendTyping(); } catch {}

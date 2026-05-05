@@ -6,9 +6,23 @@ import { ApprovalHandler } from "./approval/handler";
 import { startApprovalServer } from "./approval/server";
 import { setLogLevel, logger } from "./utils/logger";
 import type { Channel } from "./types/channel";
+import {
+  configureScheduler,
+  setScheduleMessageSender,
+  setScheduleDmSender,
+  setSchedulerClaudeBridge,
+  startScheduler,
+  stopScheduler,
+} from "./services/scheduler";
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
+
+// Configure scheduler with config values
+configureScheduler({
+  timezone: config.schedulerTimezone,
+  tickMs: config.schedulerTickMs,
+});
 
 const registry = new SessionRegistry();
 const orchestrator = new Orchestrator(config, registry);
@@ -34,11 +48,18 @@ const approvalHandler = new ApprovalHandler({
 });
 const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort);
 
+// Wire up the scheduler with Discord send functions and Claude bridge
+setScheduleMessageSender((channelId, text) => discord.sendToChannel(channelId, text));
+setScheduleDmSender((userId, text) => discord.sendDm(userId, text));
+setSchedulerClaudeBridge(orchestrator.getBridge());
+startScheduler();
+
 logger.info(`channels-listener running with ${channels.length} channel(s)`);
 
 // Graceful shutdown
 const shutdown = async () => {
   logger.info("Shutting down...");
+  stopScheduler();
   approvalServer.stop();
   for (const ch of channels) await ch.stop();
   orchestrator.destroy();
