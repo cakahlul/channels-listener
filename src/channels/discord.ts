@@ -9,7 +9,7 @@ import {
   type TextChannel,
   type ThreadChannel,
 } from "discord.js";
-import type { Channel, InboundMessage, ReplySender } from "../types/channel";
+import type { Channel, InboundMessage, ReplySender, StreamingReplier, StreamingReplierFactory } from "../types/channel";
 import type { Attachment } from "../core/claude-bridge";
 import type { Config } from "../config";
 import { logger } from "../utils/logger";
@@ -139,6 +139,81 @@ function makeReplySender(channel: { send: Function }): ReplySender {
   };
 }
 
+/** Discord rate-limit-safe interval for message edits (ms). */
+const STREAM_FLUSH_INTERVAL = 1000;
+
+/**
+ * Create a StreamingReplier that edits a Discord message in place.
+ * Batches deltas and flushes on a timer to stay within rate limits.
+ * When content exceeds MAX_MESSAGE_LENGTH, finalises the current message
+ * and starts a new one.
+ */
+function makeStreamingReplier(channel: { send: Function }): StreamingReplier {
+  let buffer = "";           // accumulated text not yet sent
+  let currentMsg: any = null; // the Discord message being edited
+  let sentText = "";          // text already visible in currentMsg
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let flushPromise: Promise<void> = Promise.resolve();
+
+  async function doFlush() {
+    if (buffer === sentText && currentMsg) return; // nothing new
+
+    const text = buffer;
+    try {
+      if (!currentMsg) {
+        // First message — send a new one
+        const chunk = text.slice(0, MAX_MESSAGE_LENGTH);
+        currentMsg = await channel.send(chunk);
+        sentText = chunk;
+      } else if (text.length <= MAX_MESSAGE_LENGTH) {
+        // Still fits in one message — edit in place
+        await currentMsg.edit(text);
+        sentText = text;
+      } else {
+        // Overflows — finalise current message and start a new one
+        const overflowAt = MAX_MESSAGE_LENGTH;
+        // Find a nice split point in the already-sent content boundary
+        const finalText = text.slice(0, overflowAt);
+        await currentMsg.edit(finalText);
+        sentText = finalText;
+
+        // Remaining text goes into a new message
+        const remainder = text.slice(overflowAt);
+        buffer = remainder;
+        currentMsg = await channel.send(remainder.slice(0, MAX_MESSAGE_LENGTH));
+        sentText = remainder.slice(0, MAX_MESSAGE_LENGTH);
+      }
+    } catch (err) {
+      logger.warn("[discord] Stream flush error:", err);
+    }
+  }
+
+  return {
+    onDelta(delta: string) {
+      buffer += delta;
+
+      // Start a periodic flush timer on first delta
+      if (!timer) {
+        timer = setInterval(() => {
+          flushPromise = flushPromise.then(doFlush);
+        }, STREAM_FLUSH_INTERVAL);
+        // Also do an immediate first flush so the user sees something quickly
+        flushPromise = flushPromise.then(doFlush);
+      }
+    },
+
+    async flush() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      // Final flush to make sure everything is sent
+      await flushPromise;
+      await doFlush();
+    },
+  };
+}
+
 export class DiscordChannel implements Channel {
   readonly name = "discord";
   private client: Client | null = null;
@@ -184,7 +259,7 @@ export class DiscordChannel implements Channel {
   }
 
   async start(
-    onMessage: (msg: InboundMessage, reply: ReplySender) => Promise<void>
+    onMessage: (msg: InboundMessage, reply: ReplySender, createStreamer?: StreamingReplierFactory) => Promise<void>
   ): Promise<void> {
     this.client = new Client({
       intents: [
@@ -239,7 +314,7 @@ export class DiscordChannel implements Channel {
           };
 
           try { await thread.sendTyping(); } catch {}
-          await onMessage(inbound, makeReplySender(thread));
+          await onMessage(inbound, makeReplySender(thread), () => makeStreamingReplier(thread));
           return;
         }
 
@@ -280,7 +355,7 @@ export class DiscordChannel implements Channel {
         };
 
         try { await thread.sendTyping(); } catch {}
-        await onMessage(inbound, makeReplySender(thread));
+        await onMessage(inbound, makeReplySender(thread), () => makeStreamingReplier(thread));
       } catch (err) {
         logger.error(`[discord] Error handling guild message:`, err);
       }
@@ -325,7 +400,7 @@ export class DiscordChannel implements Channel {
           }
         } catch {}
 
-        await onMessage(inbound, makeReplySender(channel as any));
+        await onMessage(inbound, makeReplySender(channel as any), () => makeStreamingReplier(channel as any));
       } catch (err) {
         logger.error(`[discord] Error handling DM:`, err);
       }

@@ -18,6 +18,10 @@ export interface BridgeResponse {
 interface AskOptions {
   model?: string;
   maxTurns?: number;
+  /** Called with each text delta during streaming. */
+  onTextDelta?: (delta: string) => void;
+  /** Called when the stream is complete (before image extraction). */
+  onStreamEnd?: () => Promise<void>;
 }
 
 /** Semaphore to limit concurrent Claude processes. */
@@ -74,6 +78,8 @@ export class ClaudeBridge {
   ): Promise<BridgeResponse> {
     const model = opts?.model || this.defaultModel;
     const maxTurns = opts?.maxTurns || this.defaultMaxTurns;
+    const onTextDelta = opts?.onTextDelta;
+    const onStreamEnd = opts?.onStreamEnd;
 
     // Build the message content blocks
     const content: MessageParam["content"] = [];
@@ -95,7 +101,7 @@ export class ClaudeBridge {
     // Add text prompt
     content.push({ type: "text" as const, text: prompt });
 
-    logger.debug(`Querying claude SDK session=${sessionId} (new=${isNewSession}) images=${attachments?.length ?? 0}`);
+    logger.debug(`Querying claude SDK session=${sessionId} (new=${isNewSession}) images=${attachments?.length ?? 0} streaming=${!!onTextDelta}`);
 
     await this.semaphore.acquire();
     try {
@@ -110,6 +116,8 @@ export class ClaudeBridge {
         ...(isNewSession
           ? { sessionId }
           : { resume: sessionId }),
+        // Enable partial message streaming when a delta handler is provided
+        ...(onTextDelta ? { includePartialMessages: true } : {}),
       };
 
       let resultText = "";
@@ -125,6 +133,14 @@ export class ClaudeBridge {
         })(),
         options,
       })) {
+        // Stream text deltas to the caller
+        if (onTextDelta && message.type === "stream_event") {
+          const event = (message as any).event;
+          if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
+            onTextDelta(event.delta.text);
+          }
+        }
+
         if (message.type === "result") {
           finalSessionId = message.session_id;
           if (message.subtype === "success") {
@@ -134,6 +150,11 @@ export class ClaudeBridge {
             resultText = errors?.join("\n") || "Claude encountered an error.";
           }
         }
+      }
+
+      // Signal stream end so the channel can flush any buffered content
+      if (onStreamEnd) {
+        await onStreamEnd();
       }
 
       if (!resultText) {

@@ -36,7 +36,7 @@ const channels: Channel[] = [
 ];
 
 for (const ch of channels) {
-  await ch.start((msg, reply) => orchestrator.handle(msg, reply));
+  await ch.start((msg, reply, createStreamer) => orchestrator.handle(msg, reply, createStreamer));
   logger.info(`${ch.name} channel started`);
 }
 

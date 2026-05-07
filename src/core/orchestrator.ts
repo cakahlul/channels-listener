@@ -1,5 +1,5 @@
 import type { Config } from "../config";
-import type { InboundMessage, ReplySender } from "../types/channel";
+import type { InboundMessage, ReplySender, StreamingReplierFactory } from "../types/channel";
 import type { SessionRegistry } from "../approval/session-registry";
 import { ClaudeBridge } from "./claude-bridge";
 import { SessionStore } from "./session-store";
@@ -36,7 +36,7 @@ export class Orchestrator {
     this.registry = registry;
   }
 
-  async handle(msg: InboundMessage, reply: ReplySender): Promise<void> {
+  async handle(msg: InboundMessage, reply: ReplySender, createStreamer?: StreamingReplierFactory): Promise<void> {
     const { context, text } = msg;
     const flightKey = `${context.platform}:${context.sessionKey}`;
 
@@ -80,16 +80,31 @@ export class Orchestrator {
 
       logger.info(`[${context.platform}] ${context.userName}: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""} (${msg.attachments?.length ?? 0} images)`);
 
+      // Set up streaming if the channel supports it
+      const streamer = createStreamer?.();
+
       const response = await this.bridge.ask(
         text,
         session.sessionId,
         session.isNew,
         msg.attachments,
+        streamer
+          ? {
+              onTextDelta: (delta) => streamer.onDelta(delta),
+              onStreamEnd: () => streamer.flush(),
+            }
+          : undefined,
       );
 
       logger.info(`[${context.platform}] Reply to ${context.userName}: ${response.text.slice(0, 100)}${response.text.length > 100 ? "..." : ""} (${response.imageFiles.length} images)`);
 
-      await reply(response.text, response.imageFiles);
+      // If we streamed, only send images (text was already streamed).
+      // If not streaming, send the full response.
+      if (streamer && response.imageFiles.length) {
+        await reply("", response.imageFiles);
+      } else if (!streamer) {
+        await reply(response.text, response.imageFiles);
+      }
     } catch (err) {
       logger.error(`Error handling message from ${context.userName}:`, err);
       await reply("Sorry, something went wrong processing your message. Please try again.");

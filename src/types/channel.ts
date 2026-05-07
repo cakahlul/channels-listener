@@ -23,9 +23,18 @@ export interface InboundMessage {
 /** Sends a reply back through the originating platform. */
 export type ReplySender = (text: string, imageFiles?: string[]) => Promise<void>;
 
+/** Handles streaming text deltas for real-time message updates. */
+export interface StreamingReplier {
+  onDelta: (textDelta: string) => void;
+  flush: () => Promise<void>;
+}
+
+/** Creates a StreamingReplier for a given channel context. */
+export type StreamingReplierFactory = () => StreamingReplier;
+
 /** Every chat platform adapter implements this interface. */
 export interface Channel {
   readonly name: string;
-  start(onMessage: (msg: InboundMessage, reply: ReplySender) => Promise<void>): Promise<void>;
+  start(onMessage: (msg: InboundMessage, reply: ReplySender, createStreamer?: StreamingReplierFactory) => Promise<void>): Promise<void>;
   stop(): Promise<void>;
 }
