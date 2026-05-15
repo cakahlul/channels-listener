@@ -27,9 +27,22 @@ db.run(`
     notify_user_name  TEXT,
     enabled           INTEGER NOT NULL DEFAULT 1,
     last_run_at       INTEGER,
-    created_at        INTEGER NOT NULL
+    created_at        INTEGER NOT NULL,
+    execution_mode    TEXT    NOT NULL DEFAULT 'task',
+    command           TEXT
   )
 `);
+
+// Idempotent column adds for pre-existing DBs.
+const existingCols = new Set(
+  (db.query("PRAGMA table_info(schedules)").all() as Array<{ name: string }>).map((r) => r.name),
+);
+if (!existingCols.has("execution_mode")) {
+  db.run("ALTER TABLE schedules ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'task'");
+}
+if (!existingCols.has("command")) {
+  db.run("ALTER TABLE schedules ADD COLUMN command TEXT");
+}
 
 logger.debug("Database initialization complete");
 

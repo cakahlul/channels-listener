@@ -1,3 +1,16 @@
+## Steering & Indexing (read first, update last)
+
+Before starting any task in this repo, read **both** of these:
+- [.steering/STEERING.md](.steering/STEERING.md) — architecture, conventions, extension rules.
+- [.steering/INDEX.md](.steering/INDEX.md) — file-by-file map of features and logic.
+
+After finishing any implementation or execution, update them:
+- Update `.steering/INDEX.md` whenever a file is added/removed/renamed or its responsibility meaningfully changes.
+- Update `.steering/STEERING.md` whenever architecture, conventions, layering, or extension points shift.
+
+These two files are the source of truth for navigating the codebase. Keep them current.
+
+---
 
 Default to using Bun instead of Node.js.
 

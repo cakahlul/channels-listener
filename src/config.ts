@@ -14,6 +14,8 @@ export interface Config {
   dbPath: string;
   schedulerTimezone: string;
   schedulerTickMs: number;
+  schedulerShellTimeoutMs: number;
+  confirmTimeoutMs: number;
 }
 
 export function loadConfig(): Config {
@@ -38,5 +40,7 @@ export function loadConfig(): Config {
     dbPath: process.env.DB_PATH || "channels-listener.sqlite",
     schedulerTimezone: process.env.SCHEDULER_TIMEZONE || "Asia/Jakarta",
     schedulerTickMs: parseInt(process.env.SCHEDULER_TICK_MS || "60000", 10),
+    schedulerShellTimeoutMs: parseInt(process.env.SCHEDULER_SHELL_TIMEOUT_MS || "600000", 10),
+    confirmTimeoutMs: parseInt(process.env.CONFIRM_TIMEOUT_MS || "300000", 10),
   };
 }

@@ -6,6 +6,8 @@ import { logger } from "../utils/logger";
 // Types
 // ---------------------------------------------------------------------------
 
+export type ExecutionMode = "task" | "direct" | "shell";
+
 export interface Schedule {
   id: string;
   channelId: string;
@@ -22,6 +24,8 @@ export interface Schedule {
   enabled: boolean;
   lastRunAt: number | null;
   createdAt: number;
+  executionMode: ExecutionMode;
+  command: string | null;
 }
 
 interface ScheduleRow {
@@ -40,15 +44,17 @@ interface ScheduleRow {
   enabled: number;
   last_run_at: number | null;
   created_at: number;
+  execution_mode: string | null;
+  command: string | null;
 }
 
 // ---------------------------------------------------------------------------
 // Prepared statements
 // ---------------------------------------------------------------------------
 
-const insertSchedule = db.query<void, [string, string, string, string, string, string, string, string, number, number, number, string | null, string | null]>(`
-  INSERT INTO schedules (id, channel_id, platform, cron_expression, prompt, timezone, created_by, created_by_id, created_at, recurring, direct_message, notify_user_id, notify_user_name)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+const insertSchedule = db.query<void, [string, string, string, string, string, string, string, string, number, number, number, string | null, string | null, string, string | null]>(`
+  INSERT INTO schedules (id, channel_id, platform, cron_expression, prompt, timezone, created_by, created_by_id, created_at, recurring, direct_message, notify_user_id, notify_user_name, execution_mode, command)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const selectScheduleById = db.query<ScheduleRow, [string]>(
@@ -96,11 +102,13 @@ export interface ParsedScheduleInput {
 let schedulerTimezone = "Asia/Jakarta";
 let schedulerTickMs = 60_000;
 let schedulerClaudeCodePath: string | undefined;
+let schedulerShellTimeoutMs = 600_000;
 
-export function configureScheduler(opts: { timezone?: string; tickMs?: number; claudeCodePath?: string }) {
+export function configureScheduler(opts: { timezone?: string; tickMs?: number; claudeCodePath?: string; shellTimeoutMs?: number }) {
   if (opts.timezone) schedulerTimezone = opts.timezone;
   if (opts.tickMs) schedulerTickMs = opts.tickMs;
   if (opts.claudeCodePath) schedulerClaudeCodePath = opts.claudeCodePath;
+  if (opts.shellTimeoutMs) schedulerShellTimeoutMs = opts.shellTimeoutMs;
 }
 
 /**
@@ -352,6 +360,13 @@ export function nextRunTime(cron: string, timezone: string, from?: Date): Date |
 // ---------------------------------------------------------------------------
 
 function rowToSchedule(row: ScheduleRow): Schedule {
+  const rawMode = row.execution_mode;
+  const executionMode: ExecutionMode =
+    rawMode === "shell" || rawMode === "direct" || rawMode === "task"
+      ? rawMode
+      : row.direct_message === 1
+        ? "direct"
+        : "task";
   return {
     id: row.id,
     channelId: row.channel_id,
@@ -368,6 +383,8 @@ function rowToSchedule(row: ScheduleRow): Schedule {
     enabled: row.enabled === 1,
     lastRunAt: row.last_run_at,
     createdAt: row.created_at,
+    executionMode,
+    command: row.command,
   };
 }
 
@@ -388,6 +405,8 @@ export function createSchedule(
     directMessage?: boolean;
     notifyUserId?: string | null;
     notifyUserName?: string | null;
+    executionMode?: ExecutionMode;
+    command?: string | null;
   },
 ): Schedule {
   const id = crypto.randomUUID().slice(0, 8);
@@ -396,6 +415,8 @@ export function createSchedule(
   const directMessage = options?.directMessage ?? false;
   const notifyUserId = options?.notifyUserId ?? null;
   const notifyUserName = options?.notifyUserName ?? null;
+  const executionMode: ExecutionMode = options?.executionMode ?? (directMessage ? "direct" : "task");
+  const command = options?.command ?? null;
   const now = Date.now();
 
   const parts = cronExpression.trim().split(/\s+/);
@@ -403,8 +424,12 @@ export function createSchedule(
     throw new Error(`Invalid cron expression: expected 5 fields, got ${parts.length}`);
   }
 
-  insertSchedule.run(id, channelId, platform, cronExpression, prompt, tz, createdBy, createdById, now, recurring ? 1 : 0, directMessage ? 1 : 0, notifyUserId, notifyUserName);
-  logger.info("Schedule created", { id, channelId, cronExpression, recurring, directMessage, prompt: prompt.slice(0, 100), createdBy });
+  if (executionMode === "shell" && !command) {
+    throw new Error("Shell execution mode requires a command");
+  }
+
+  insertSchedule.run(id, channelId, platform, cronExpression, prompt, tz, createdBy, createdById, now, recurring ? 1 : 0, directMessage ? 1 : 0, notifyUserId, notifyUserName, executionMode, command);
+  logger.info("Schedule created", { id, channelId, cronExpression, recurring, directMessage, executionMode, prompt: prompt.slice(0, 100), createdBy });
 
   return {
     id,
@@ -422,6 +447,8 @@ export function createSchedule(
     enabled: true,
     lastRunAt: null,
     createdAt: now,
+    executionMode,
+    command,
   };
 }
 
@@ -508,6 +535,66 @@ async function executeSchedule(schedule: Schedule): Promise<void> {
 
   try {
     const hasNotifyTarget = !!(schedule.notifyUserId || schedule.notifyUserName);
+
+    // --- Shell execution mode: spawn a command and deliver its output ---
+    if (schedule.executionMode === "shell" && schedule.command) {
+      const cmd = schedule.command;
+      const ac = new AbortController();
+      const killTimer = setTimeout(() => ac.abort(), schedulerShellTimeoutMs);
+
+      let stdoutText = "";
+      let stderrText = "";
+      let exitCode = -1;
+      let timedOut = false;
+
+      try {
+        const proc = Bun.spawn(["bash", "-lc", cmd], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, SCHEDULE_ID: schedule.id },
+        });
+
+        ac.signal.addEventListener("abort", () => {
+          timedOut = true;
+          try { proc.kill(); } catch {}
+        });
+
+        [stdoutText, stderrText] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        exitCode = await proc.exited;
+      } finally {
+        clearTimeout(killTimer);
+      }
+
+      const rawBody = timedOut
+        ? `(timed out after ${Math.round(schedulerShellTimeoutMs / 1000)}s)\n${stdoutText}${stderrText}`
+        : (stdoutText.trim() || stderrText.trim() || "(no output)");
+      const body = rawBody.trim().slice(0, 1800);
+      const header = timedOut
+        ? "⏱️ Shell job timed out"
+        : exitCode === 0
+          ? "✅ Shell job completed"
+          : `❌ Shell job exit ${exitCode}`;
+      const message = `${header}\n\`\`\`\n${body}\n\`\`\``;
+
+      if (hasNotifyTarget && schedule.notifyUserId && sendDm) {
+        await sendDm(schedule.notifyUserId, message);
+      } else if (sendToChannel) {
+        await sendToChannel(schedule.channelId, message);
+      }
+
+      updateLastRun.run(Date.now(), schedule.id);
+
+      if (!schedule.recurring) {
+        updateEnabled.run(0, schedule.id);
+        logger.info("One-time shell schedule auto-disabled after run", { id: schedule.id });
+      }
+
+      logger.info("Shell schedule completed", { id: schedule.id, exitCode, timedOut, durationMs: Date.now() - startTime });
+      return;
+    }
 
     // --- Direct message mode: just deliver the text, no Claude ---
     if (schedule.directMessage) {
@@ -719,6 +806,96 @@ export function handleScheduleCommand(
       : `Schedule \`${id}\` not found.`;
   }
 
+  if (subcommand === "shell") {
+    // schedule shell "<cron>" [notify:self|notify:<userId>] [once] -- <command>
+    const dashIdx = rest.indexOf(" -- ");
+    if (dashIdx < 0) {
+      return "Usage: `schedule shell \"<cron>\" [notify:self|notify:<userId>] [once] -- <command>`";
+    }
+    const head = rest.slice("shell".length, dashIdx).trim();
+    const command = rest.slice(dashIdx + 4).trim();
+    if (!command) return "Missing command after `--`.";
+
+    // Extract cron (quoted or first 5 tokens)
+    let cronExpr: string | null = null;
+    let remainder = head;
+    const quoted = head.match(/^"([^"]+)"(.*)$/) || head.match(/^'([^']+)'(.*)$/);
+    if (quoted) {
+      cronExpr = quoted[1]!.trim();
+      remainder = quoted[2]!.trim();
+    } else {
+      const tokens = head.split(/\s+/);
+      if (tokens.length < 5) return "Cron expression must have 5 fields (or be quoted).";
+      cronExpr = tokens.slice(0, 5).join(" ");
+      remainder = tokens.slice(5).join(" ");
+    }
+
+    let recurring = true;
+    let notifyUserId: string | null = null;
+    let notifyUserName: string | null = null;
+
+    for (const tok of remainder.split(/\s+/).filter(Boolean)) {
+      if (tok.toLowerCase() === "once") {
+        recurring = false;
+      } else if (tok.toLowerCase() === "notify:self") {
+        notifyUserId = ctx.userId;
+        notifyUserName = ctx.userName;
+      } else if (tok.toLowerCase().startsWith("notify:")) {
+        const target = tok.slice("notify:".length);
+        const mentioned = (ctx.mentions || []).find((m) => m.id === target || m.username.toLowerCase() === target.toLowerCase());
+        if (mentioned) {
+          notifyUserId = mentioned.id;
+          notifyUserName = mentioned.username;
+        } else if (/^\d+$/.test(target)) {
+          notifyUserId = target;
+          notifyUserName = target;
+        } else {
+          return `Could not resolve notify target \`${target}\`. Use \`notify:self\` or \`notify:<userId>\`.`;
+        }
+      } else {
+        return `Unknown option \`${tok}\`. Allowed: \`once\`, \`notify:self\`, \`notify:<userId>\`.`;
+      }
+    }
+
+    try {
+      const schedule = createSchedule(
+        ctx.channelId,
+        ctx.platform,
+        cronExpr,
+        command, // store command as the visible prompt too
+        ctx.userName,
+        ctx.userId,
+        {
+          recurring,
+          directMessage: false,
+          notifyUserId,
+          notifyUserName,
+          executionMode: "shell",
+          command,
+        },
+      );
+
+      const desc = describeCron(cronExpr);
+      const next = nextRunTime(cronExpr, schedule.timezone);
+      const nextStr = next
+        ? next.toLocaleString("en-US", { timeZone: schedule.timezone, dateStyle: "medium", timeStyle: "short" })
+        : "—";
+      const notifyLabel = notifyUserName ? `💬 Notify: ${notifyUserName}` : "💬 Post in this channel";
+      return [
+        `✅ **Shell schedule created!**`,
+        `🆔 \`${schedule.id}\``,
+        `⏰ \`${cronExpr}\` — ${desc}`,
+        `🐚 \`${command.slice(0, 200)}\``,
+        `${recurring ? "🔁 Recurring" : "1️⃣ One-time"} | 🐚 Shell`,
+        notifyLabel,
+        `🌏 Timezone: ${schedule.timezone}`,
+        `▶️ Next run: ${nextStr}`,
+      ].join("\n");
+    } catch (err) {
+      return `❌ Failed to create shell schedule: ${String(err)}`;
+    }
+  }
+
   if (subcommand === "add" || subcommand === "create" || subcommand === "once") {
     const rawInput = parts.slice(1).join(" ");
     if (!rawInput) {
@@ -743,6 +920,9 @@ export function handleScheduleCommand(
     "",
     "`schedule once <when and what>`",
     "  Create a one-time task (auto-disables after running)",
+    "",
+    "`schedule shell \"<cron>\" [notify:self] [once] -- <command>`",
+    "  Run a shell command on cron; stdout is sent back",
     "",
     "`schedule list` or `schedules`",
     "  List all schedules in this channel",
@@ -847,6 +1027,7 @@ function formatScheduleList(channelId: string): string {
   const lines = schedules.map((s) => {
     const status = s.enabled ? "▶️" : "⏸️";
     const typeTag = s.recurring ? "🔁" : "1️⃣";
+    const modeTag = s.executionMode === "shell" ? "🐚" : s.executionMode === "direct" ? "✉️" : "🤖";
     const desc = describeCron(s.cronExpression);
     const lastRun = s.lastRunAt
       ? new Date(s.lastRunAt).toLocaleString("en-US", { timeZone: s.timezone, dateStyle: "short", timeStyle: "short" })
@@ -859,7 +1040,7 @@ function formatScheduleList(channelId: string): string {
     const notifyTag = s.notifyUserName ? `→ 💬 ${s.notifyUserName}` : "";
 
     return [
-      `${status} ${typeTag} \`${s.id}\` — \`${s.cronExpression}\` ${notifyTag}`,
+      `${status} ${typeTag} ${modeTag} \`${s.id}\` — \`${s.cronExpression}\` ${notifyTag}`,
       `   ${desc}`,
       `   📝 ${s.prompt.slice(0, 100)}${s.prompt.length > 100 ? "…" : ""}`,
       `   Last: ${lastRun} | Next: ${nextStr}`,

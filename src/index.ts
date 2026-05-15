@@ -3,6 +3,7 @@ import { Orchestrator } from "./core/orchestrator";
 import { DiscordChannel } from "./channels/discord";
 import { SessionRegistry } from "./approval/session-registry";
 import { ApprovalHandler } from "./approval/handler";
+import { ConfirmationHandler } from "./approval/confirmation-handler";
 import { startApprovalServer } from "./approval/server";
 import { setLogLevel, logger } from "./utils/logger";
 import type { Channel } from "./types/channel";
@@ -23,6 +24,7 @@ configureScheduler({
   timezone: config.schedulerTimezone,
   tickMs: config.schedulerTickMs,
   claudeCodePath: config.claudeCodePath,
+  shellTimeoutMs: config.schedulerShellTimeoutMs,
 });
 
 const registry = new SessionRegistry();
@@ -47,7 +49,11 @@ const approvalHandler = new ApprovalHandler({
   fallbackChannelId: config.approvalFallbackChannelId,
   timeoutMs: config.approvalTimeoutMs,
 });
-const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort);
+const confirmationHandler = new ConfirmationHandler({
+  client: discord.getClient(),
+  timeoutMs: config.confirmTimeoutMs,
+});
+const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort, { confirmationHandler });
 
 // Wire up the scheduler with Discord send functions and Claude bridge
 setScheduleMessageSender((channelId, text) => discord.sendToChannel(channelId, text));
