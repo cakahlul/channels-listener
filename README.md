@@ -28,7 +28,7 @@ Designed to run on a VPS with Cloudflare Tunnel (`cloudflared`) for secure expos
               └──────────────┘
 
               ┌──────────────┐
-              │    Redis     │  ← session persistence with TTL
+              │   SQLite     │  ← session persistence (TTL) + schedules
               └──────────────┘
 ```
 
@@ -51,19 +51,127 @@ src/
 ├── core/
 │   ├── orchestrator.ts       # Routes messages → Claude → replies
 │   ├── claude-bridge.ts      # Spawns claude CLI subprocess per message
-│   └── session-store.ts      # Maps user/channel → session ID in Redis with TTL
+│   └── session-store.ts      # Maps user/channel → session ID in SQLite with TTL
 ├── channels/
 │   └── discord.ts            # Discord adapter (mentions + DMs)
 └── utils/
     └── logger.ts             # Structured logging with levels
 ```
 
+## Quick Start for Non-Developers (Mac & Windows)
+
+No coding background? Follow these steps end-to-end and you'll have the bot running on your own computer. You'll be copy-pasting commands into a terminal — that's it.
+
+### What you'll need (overview)
+
+1. A **terminal** app (already on your computer)
+2. **Bun** — the engine that runs the app
+3. **Claude Code CLI** — Anthropic's command-line tool (requires a Claude account)
+4. A **Discord bot token** — free, takes ~5 minutes to create
+
+Sessions and schedules are stored in a local **SQLite** file (`channels-listener.sqlite`) that's created automatically on first run — no separate database to install.
+
+---
+
+### Step 1 — Open a terminal
+
+- **Mac**: Press `Cmd + Space`, type `Terminal`, press Enter.
+- **Windows**: Press the Windows key, type `PowerShell`, press Enter. (For best results, install **WSL** — Windows Subsystem for Linux — by running `wsl --install` in PowerShell as Administrator, then restart and use the Ubuntu terminal.)
+
+### Step 2 — Install Bun
+
+**Mac / Linux / WSL:**
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+**Windows (PowerShell, no WSL):**
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+Close and reopen your terminal, then verify:
+```bash
+bun --version
+```
+You should see a version number (e.g. `1.1.x`).
+
+### Step 3 — Install Claude Code CLI
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+(Don't have `npm`? Install [Node.js LTS](https://nodejs.org/) first — `npm` comes with it.)
+
+Then log in to your Claude account:
+```bash
+claude
+```
+Follow the prompts in your browser to authenticate, then type `/exit` to close it.
+
+### Step 4 — Create a Discord bot
+
+Follow the [Discord Setup](#discord-setup) section below. You only need the **bot token** for now — save it somewhere safe.
+
+### Step 5 — Download this app
+
+```bash
+git clone https://github.com/cakahlul/channels-listener.git
+cd channels-listener
+```
+(No `git`? On Mac: `brew install git`. On Windows: install [Git for Windows](https://git-scm.com/download/win).)
+
+### Step 6 — Install the app's dependencies
+
+```bash
+bun install
+```
+
+### Step 7 — Configure your settings
+
+Copy the example file and open it in a text editor:
+
+**Mac / Linux / WSL:**
+```bash
+cp .env.example .env
+open .env       # Mac
+# or: nano .env  (works everywhere)
+```
+
+**Windows (PowerShell):**
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Paste your Discord bot token in the `DISCORD_BOT_TOKEN=` line. Save and close.
+
+### Step 8 — Run the bot
+
+```bash
+bun run start
+```
+
+You should see log messages like `Discord channel started`. Open Discord, mention your bot in a channel (e.g. `@YourBot hello!`), and it will reply. Press `Ctrl + C` in the terminal to stop the bot.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `command not found: bun` | Close and reopen the terminal. If still missing, re-run the Bun install step. |
+| `claude: command not found` | Re-run `npm install -g @anthropic-ai/claude-code`. On Mac, you may need `sudo`. |
+| Bot is online but doesn't reply | Make sure **Message Content Intent** is enabled in the Discord Developer Portal (Bot tab → Privileged Gateway Intents). |
+| `DISCORD_BOT_TOKEN is required` | Open `.env` again and confirm the token is pasted without quotes or extra spaces. |
+
+---
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) runtime installed
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- [Redis](https://redis.io) server running (used for session persistence)
 - A Discord bot token (see [Discord Setup](#discord-setup))
+
+Sessions and schedules are persisted to a local SQLite file (`channels-listener.sqlite`) created on first run.
 
 ## Installation
 
@@ -82,11 +190,11 @@ cp .env.example .env
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | Yes | — | Discord bot token |
-| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection URL |
 | `CLAUDE_WORK_DIR` | No | `process.cwd()` | Working directory for Claude Code subprocess |
 | `CLAUDE_MODEL` | No | `sonnet` | Claude model to use |
 | `CLAUDE_MAX_TURNS` | No | `25` | Max agentic turns per message |
-| `SESSION_TTL_MINUTES` | No | `60` | Redis key expiry for sessions (minutes) |
+| `DB_PATH` | No | `channels-listener.sqlite` | SQLite file for sessions + schedules |
+| `SESSION_TTL_MINUTES` | No | `60` | Session expiry in SQLite (minutes) |
 | `MAX_CONCURRENT_CLAUDE` | No | `5` | Max concurrent Claude processes |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
 
@@ -135,13 +243,6 @@ cloudflared tunnel create channels-listener
 
 # Run the tunnel (configure in cloudflared config.yml to point to your app's port)
 cloudflared tunnel run channels-listener
-```
-
-Ensure Redis is running on the VPS:
-
-```bash
-sudo apt install redis-server
-sudo systemctl enable --now redis-server
 ```
 
 For running channels-listener as a systemd service on the VPS:
@@ -283,13 +384,13 @@ That's it. The orchestrator, session management, and Claude Bridge work automati
 
 ## Features
 
-- **Session continuity** — each user gets a persistent Claude conversation via `--resume`, stored in Redis
-- **Session persistence** — sessions survive app restarts since they're stored in Redis with automatic TTL expiry
+- **Session continuity** — each user gets a persistent Claude conversation via `--resume`, stored in SQLite
+- **Session persistence** — sessions survive app restarts; expired rows are purged lazily on read and via a periodic sweep
 - **Concurrency control** — configurable max concurrent Claude processes with queuing
 - **In-flight dedup** — prevents double-processing when a user sends multiple messages quickly
 - **Graceful shutdown** — clean disconnect from all platforms on SIGINT/SIGTERM
 - **Extensible** — add a new platform by implementing one interface
-- **Zero external dependencies for Redis** — uses Bun's built-in `RedisClient`
+- **Zero external services** — uses Bun's built-in `bun:sqlite`; no Redis or other DB needed
 
 ## License
 

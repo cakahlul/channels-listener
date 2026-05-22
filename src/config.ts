@@ -4,7 +4,6 @@ export interface Config {
   claudeModel: string;
   claudeMaxTurns: number;
   claudeCodePath?: string;
-  redisUrl: string;
   sessionTtlMinutes: number;
   maxConcurrentClaude: number;
   logLevel: string;
@@ -27,7 +26,6 @@ export function loadConfig(): Config {
   return {
     discordBotToken,
     claudeWorkDir: process.env.CLAUDE_WORK_DIR || process.cwd(),
-    redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
     claudeMaxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || "25", 10),
     claudeCodePath: process.env.CLAUDE_CODE_PATH,

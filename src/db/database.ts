@@ -44,6 +44,17 @@ if (!existingCols.has("command")) {
   db.run("ALTER TABLE schedules ADD COLUMN command TEXT");
 }
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    platform     TEXT    NOT NULL,
+    session_key  TEXT    NOT NULL,
+    session_id   TEXT    NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    PRIMARY KEY (platform, session_key)
+  )
+`);
+db.run("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)");
+
 logger.debug("Database initialization complete");
 
 export { db };

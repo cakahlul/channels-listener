@@ -32,7 +32,7 @@ export class Orchestrator {
       workDir: config.claudeWorkDir,
       claudeCodePath: config.claudeCodePath,
     });
-    this.sessions = new SessionStore(config.redisUrl, config.sessionTtlMinutes);
+    this.sessions = new SessionStore(config.sessionTtlMinutes);
     this.registry = registry;
   }
 

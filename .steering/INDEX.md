@@ -12,7 +12,7 @@ Read this before any task. Update after any file add/remove/significant change.
 | Discord adapter | [src/channels/discord.ts](../src/channels/discord.ts) |
 | Message orchestration | [src/core/orchestrator.ts](../src/core/orchestrator.ts) |
 | Claude SDK bridge | [src/core/claude-bridge.ts](../src/core/claude-bridge.ts) |
-| Session storage (Redis) | [src/core/session-store.ts](../src/core/session-store.ts) |
+| Session storage (SQLite) | [src/core/session-store.ts](../src/core/session-store.ts) |
 | Approval system | [src/approval/handler.ts](../src/approval/handler.ts), [src/approval/server.ts](../src/approval/server.ts), [src/approval/session-registry.ts](../src/approval/session-registry.ts), [scripts/approval-hook.ts](../scripts/approval-hook.ts) |
 | Ad-hoc confirmation (DM Yes/No) | [src/approval/confirmation-handler.ts](../src/approval/confirmation-handler.ts), `POST /confirm` in [src/approval/server.ts](../src/approval/server.ts) |
 | Scheduler (cron + NL parse) | [src/services/scheduler.ts](../src/services/scheduler.ts) |
@@ -45,7 +45,7 @@ Helpers: `splitMessage` (2000 char chunks, newline-aware), `stripMention`, `down
 `ClaudeBridge.ask()`: builds MessageParam (images + text), acquires `Semaphore` (maxConcurrent), calls SDK `query()` with `sessionId` (new) or `resume` (existing), streams `content_block_delta` text → `onTextDelta`, captures final `result` message. Extracts image paths from response text via `IMAGE_PATH_RE` and verifies existence via `Bun.file`. Returns `{ text, imageFiles }`.
 
 ### [src/core/session-store.ts](../src/core/session-store.ts)
-Redis-backed `SessionStore` (key `session:{platform}:{sessionKey}`). `get()` returns existing+refresh TTL, or creates new UUID. `reset()` deletes. Uses `bun`'s `RedisClient`.
+SQLite-backed `SessionStore` (table `sessions`, PK `(platform, session_key)`, `expires_at` epoch-ms). `get()` returns existing+refresh TTL via UPDATE, or inserts new UUID. `reset()` deletes row. Periodic `purgeExpired` sweep every 5 min plus lazy filter on `get()` (rows past `expires_at` treated as missing). No external service required.
 
 ### [src/approval/handler.ts](../src/approval/handler.ts)
 `ApprovalHandler.requestApproval()`: resolves channel via `SessionRegistry` (fallback to configured channel), renders rich embed via `formatToolInput` (per-tool formatters for Bash/Edit/Write/Read) + `toolMeta` (emoji+color map), posts Approve/Deny buttons, awaits button interaction OR timeout. Edits message to reflect outcome.
@@ -77,7 +77,7 @@ SQLite-backed cron. Components:
 - **Injection**: `setScheduleMessageSender`, `setScheduleDmSender`, `setSchedulerClaudeBridge` wired from `index.ts`.
 
 ### [src/db/database.ts](../src/db/database.ts)
-`bun:sqlite` Database at `DB_PATH`. PRAGMA: WAL + foreign_keys. Creates `schedules` table on boot (id, channel_id, platform, cron_expression, prompt, timezone, created_by, created_by_id, recurring, direct_message, notify_user_id, notify_user_name, enabled, last_run_at, created_at, execution_mode, command). Idempotent `ALTER TABLE ADD COLUMN` runs for `execution_mode` + `command` so pre-existing DBs migrate on boot.
+`bun:sqlite` Database at `DB_PATH`. PRAGMA: WAL + foreign_keys. Creates `schedules` table on boot (id, channel_id, platform, cron_expression, prompt, timezone, created_by, created_by_id, recurring, direct_message, notify_user_id, notify_user_name, enabled, last_run_at, created_at, execution_mode, command). Idempotent `ALTER TABLE ADD COLUMN` runs for `execution_mode` + `command` so pre-existing DBs migrate on boot. Also creates `sessions` table (platform, session_key, session_id, expires_at; PK platform+session_key) with index on `expires_at` for purge sweeps.
 
 ### [src/utils/logger.ts](../src/utils/logger.ts)
 Levels debug<info<warn<error. `setLogLevel`, `logger.{debug,info,warn,error}`. Timestamps ISO.
@@ -86,12 +86,12 @@ Levels debug<info<warn<error. `setLogLevel`, `logger.{debug,info,warn,error}`. T
 Dev helper to test DM sending. (Not loaded by main app.)
 
 ## Env Vars
-DISCORD_BOT_TOKEN (required), CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, REDIS_URL, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
+DISCORD_BOT_TOKEN (required), CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
 
 ## External Dependencies
 - `@anthropic-ai/claude-agent-sdk` — `query()` streaming interface.
 - `discord.js` v14 — guild + DM + thread + button interactions.
-- Bun built-ins: `bun:sqlite`, `RedisClient`, `Bun.serve`, `Bun.file`.
+- Bun built-ins: `bun:sqlite`, `Bun.serve`, `Bun.file`.
 
 ## In-flight / known gaps
 - No tests (`bun test` not yet wired).

@@ -1,4 +1,4 @@
-import { RedisClient } from "bun";
+import { db } from "../db/database";
 import { logger } from "../utils/logger";
 
 export interface Session {
@@ -6,44 +6,69 @@ export interface Session {
   isNew: boolean;
 }
 
-const KEY_PREFIX = "session:";
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 export class SessionStore {
-  private redis: RedisClient;
-  private ttlSeconds: number;
+  private ttlMs: number;
+  private cleanupTimer: ReturnType<typeof setInterval>;
 
-  constructor(redisUrl: string, ttlMinutes: number) {
-    this.redis = new RedisClient(redisUrl);
-    this.ttlSeconds = ttlMinutes * 60;
-  }
+  private selectStmt = db.query<
+    { session_id: string; expires_at: number },
+    [string, string]
+  >("SELECT session_id, expires_at FROM sessions WHERE platform = ? AND session_key = ?");
 
-  private makeKey(platform: string, sessionKey: string): string {
-    return `${KEY_PREFIX}${platform}:${sessionKey}`;
+  private upsertStmt = db.query(
+    `INSERT INTO sessions (platform, session_key, session_id, expires_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(platform, session_key) DO UPDATE SET
+       session_id = excluded.session_id,
+       expires_at = excluded.expires_at`,
+  );
+
+  private touchStmt = db.query(
+    "UPDATE sessions SET expires_at = ? WHERE platform = ? AND session_key = ?",
+  );
+
+  private deleteStmt = db.query(
+    "DELETE FROM sessions WHERE platform = ? AND session_key = ?",
+  );
+
+  private purgeStmt = db.query("DELETE FROM sessions WHERE expires_at <= ?");
+
+  constructor(ttlMinutes: number) {
+    this.ttlMs = ttlMinutes * 60 * 1000;
+    this.purgeExpired();
+    this.cleanupTimer = setInterval(() => this.purgeExpired(), CLEANUP_INTERVAL_MS);
   }
 
   async get(platform: string, sessionKey: string): Promise<Session> {
-    const key = this.makeKey(platform, sessionKey);
-    const data = await this.redis.get(key);
+    const now = Date.now();
+    const row = this.selectStmt.get(platform, sessionKey);
 
-    if (data) {
-      await this.redis.expire(key, this.ttlSeconds);
-      const sessionId = JSON.parse(data).sessionId as string;
-      return { sessionId, isNew: false };
+    if (row && row.expires_at > now) {
+      this.touchStmt.run(now + this.ttlMs, platform, sessionKey);
+      return { sessionId: row.session_id, isNew: false };
     }
 
     const sessionId = crypto.randomUUID();
-    await this.redis.set(key, JSON.stringify({ sessionId }), "EX", this.ttlSeconds);
-    logger.debug(`New session created: ${key} -> ${sessionId}`);
+    this.upsertStmt.run(platform, sessionKey, sessionId, now + this.ttlMs);
+    logger.debug(`New session created: ${platform}:${sessionKey} -> ${sessionId}`);
     return { sessionId, isNew: true };
   }
 
   async reset(platform: string, sessionKey: string): Promise<void> {
-    const key = this.makeKey(platform, sessionKey);
-    await this.redis.del(key);
-    logger.debug(`Session reset: ${key}`);
+    this.deleteStmt.run(platform, sessionKey);
+    logger.debug(`Session reset: ${platform}:${sessionKey}`);
   }
 
   destroy(): void {
-    this.redis.close();
+    clearInterval(this.cleanupTimer);
+  }
+
+  private purgeExpired(): void {
+    const res = this.purgeStmt.run(Date.now());
+    if (res.changes > 0) {
+      logger.debug(`Purged ${res.changes} expired session(s)`);
+    }
   }
 }
