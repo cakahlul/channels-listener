@@ -1,7 +1,7 @@
 # Steering Document — channels-listener
 
 ## Purpose
-Bridge chat platforms (Discord today, Telegram/Google Chat planned) → Claude Code CLI subprocess. User messages → Claude → reply sent back via originating platform. Designed for VPS deploy + Cloudflare Tunnel.
+Bridge chat platforms (Discord + Google Chat today, Telegram planned) → Claude Code CLI subprocess. User messages → Claude → reply sent back via originating platform. Designed for VPS deploy + Cloudflare Tunnel.
 
 ## Core Principles
 - **Runtime**: Bun only. Never Node/npm/ts-node/vite/express/ws/dotenv/better-sqlite3/ioredis/pg. Use `Bun.serve`, `bun:sqlite`, built-in `WebSocket`, `Bun.file`, `Bun.$`.
@@ -10,7 +10,7 @@ Bridge chat platforms (Discord today, Telegram/Google Chat planned) → Claude C
 - **Approvals out-of-band**: Claude Code hook → HTTP `/approval` (Bun.serve) → Discord button → resolved Promise → hook stdout.
 - **Scheduler is SQLite-backed cron**: parses NL via one-shot Claude query, ticks every minute, supports recurring/one-time, three execution modes (`direct` deliver-as-text, `task` Claude-processed, `shell` external command via `Bun.spawn`).
 - **External bots talk to us over HTTP**: the approval server exposes `POST /confirm` so sibling processes (e.g. clcok-automation) can request a Yes/No DM confirmation from the user without spinning up their own Discord client.
-- **Streaming when supported**: streamer flushes text deltas to Discord edits at 1s interval. Non-stream channels get full response.
+- **Streaming when supported**: streamer flushes text deltas to Discord edits at 1s interval. Non-stream channels get full response. Claude-created image files detected in final text are sent as channel attachments where supported.
 
 ## Architecture Layers
 ```
@@ -28,7 +28,8 @@ channels/*  →  Orchestrator  →  ClaudeBridge (SDK query)  →  Claude Code C
 ## Conventions
 - Logger: `src/utils/logger.ts` — levels debug/info/warn/error. Use `logger.info(...)`, never `console.*`.
 - Config: all env reads in `src/config.ts`. Never read `process.env` elsewhere.
-- Session keys: Discord guild thread → `threadId`; Discord DM → `dm:{channelId}`.
+- Session keys: Discord guild thread → `threadId`; Discord DM → `dm:{channelId}`; Google Chat → `{spaceName}::{threadName||"main"}`.
+- Google Chat is HTTP-webhook (Bun.serve on `GOOGLE_CHAT_WEBHOOK_PORT`, default 7843); auth via service-account `chat.bot` scope. Replies must return `{}` synchronously and dispatch processing async.
 - Schedules persisted in `channels-listener.sqlite` (WAL mode, table `schedules`).
 - Approval hook auto-allows read-only tools (see `scripts/approval-hook.ts` AUTO_ALLOW_TOOLS / READ_ONLY_BASH_PREFIXES). Destructive ops → Discord buttons.
 - Reply chunking: Discord 2000 char limit, prefer newline split at >50% boundary.

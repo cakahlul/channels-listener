@@ -1,6 +1,7 @@
 import { loadConfig } from "./config";
 import { Orchestrator } from "./core/orchestrator";
 import { DiscordChannel } from "./channels/discord";
+import { GoogleChatChannel } from "./channels/google-chat";
 import { SessionRegistry } from "./approval/session-registry";
 import { ApprovalHandler } from "./approval/handler";
 import { ConfirmationHandler } from "./approval/confirmation-handler";
@@ -31,11 +32,13 @@ const registry = new SessionRegistry();
 const orchestrator = new Orchestrator(config, registry);
 
 const discord = new DiscordChannel(config);
-const channels: Channel[] = [
-  discord,
-  // Future: new TelegramChannel(config),
-  // Future: new GoogleChatChannel(config),
-];
+const channels: Channel[] = [discord];
+
+if (config.googleChatEnabled) {
+  channels.push(new GoogleChatChannel(config));
+} else {
+  logger.info("Google Chat disabled (set GOOGLE_CHAT_ENABLED=true to enable)");
+}
 
 for (const ch of channels) {
   await ch.start((msg, reply, createStreamer) => orchestrator.handle(msg, reply, createStreamer));

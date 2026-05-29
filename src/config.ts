@@ -1,5 +1,9 @@
 export interface Config {
   discordBotToken: string;
+  googleChatEnabled: boolean;
+  googleChatCredentialsPath: string;
+  googleChatWebhookPort: number;
+  googleChatVerificationToken?: string;
   claudeWorkDir: string;
   claudeModel: string;
   claudeMaxTurns: number;
@@ -25,6 +29,10 @@ export function loadConfig(): Config {
 
   return {
     discordBotToken,
+    googleChatEnabled: process.env.GOOGLE_CHAT_ENABLED === "true",
+    googleChatCredentialsPath: process.env.GOOGLE_APPLICATION_CREDENTIALS || "./credentials.json",
+    googleChatWebhookPort: parseInt(process.env.GOOGLE_CHAT_WEBHOOK_PORT || "7843", 10),
+    googleChatVerificationToken: process.env.GOOGLE_CHAT_VERIFICATION_TOKEN,
     claudeWorkDir: process.env.CLAUDE_WORK_DIR || process.cwd(),
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
     claudeMaxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || "25", 10),

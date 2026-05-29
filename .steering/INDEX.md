@@ -10,6 +10,7 @@ Read this before any task. Update after any file add/remove/significant change.
 | Config / env loading | [src/config.ts](../src/config.ts), [.env.example](../.env.example) |
 | Channel abstraction | [src/types/channel.ts](../src/types/channel.ts) |
 | Discord adapter | [src/channels/discord.ts](../src/channels/discord.ts) |
+| Google Chat adapter | [src/channels/google-chat.ts](../src/channels/google-chat.ts) |
 | Message orchestration | [src/core/orchestrator.ts](../src/core/orchestrator.ts) |
 | Claude SDK bridge | [src/core/claude-bridge.ts](../src/core/claude-bridge.ts) |
 | Session storage (SQLite) | [src/core/session-store.ts](../src/core/session-store.ts) |
@@ -37,6 +38,9 @@ Interfaces: `ChannelContext` (platform/sessionKey/channelId/userId/userName), `I
 - **DM**: handled via raw `MESSAGE_CREATE` event (discord.js drops DM). sessionKey=`dm:{channelId}`.
 
 Helpers: `splitMessage` (2000 char chunks, newline-aware), `stripMention`, `downloadImageAttachments` / `downloadRawAttachments` (PNG/JPEG/GIF/WebP → base64), `makeReplySender` (text chunks + image attachments), `makeStreamingReplier` (1s flush interval, edits in place, splits on 2000-char overflow). Public methods: `getClient`, `sendToChannel`, `sendDm` (scheduler hooks).
+
+### [src/channels/google-chat.ts](../src/channels/google-chat.ts)
+`GoogleChatChannel` impl. Runs its own `Bun.serve` on `googleChatWebhookPort` (default 7843) to receive Google Chat webhook POSTs. Uses `google-auth-library` (`chat.bot` scope) for service-account auth. Normalizes new (`raw.chat.messagePayload`) and legacy event shapes → MESSAGE / ADDED_TO_SPACE / REMOVED_FROM_SPACE. Session key = `${spaceName}::${threadName||"main"}`; channelId = `spaceName`. Reply sender posts text to `${CHAT_API}/{space}/messages` and Claude-created images to `${CHAT_API}/{space}/attachments:upload` (fallback sends local path if upload fails). Streaming via PATCH `updateMessage` (4096 char limit, 1.5s flush). Downloads image attachments via `media/{resource}?alt=media`, filters to PNG/JPEG/GIF/WebP. Webhook returns `{}` immediately and dispatches `onMessage` async to avoid Google Chat's response timeout. Enabled by `GOOGLE_CHAT_ENABLED=true` in env. No approval/scheduler integration yet — approvals remain Discord-only.
 
 ### [src/core/orchestrator.ts](../src/core/orchestrator.ts)
 `Orchestrator.handle()`: handles `/reset` command, dispatches schedule commands via `handleScheduleCommand`, enforces single in-flight per `platform:sessionKey`, registers session→channel mapping for approvals, invokes `ClaudeBridge.ask` with optional streamer, replies. `toDiscordChannelId` strips `dm:` prefix.
@@ -86,14 +90,16 @@ Levels debug<info<warn<error. `setLogLevel`, `logger.{debug,info,warn,error}`. T
 Dev helper to test DM sending. (Not loaded by main app.)
 
 ## Env Vars
-DISCORD_BOT_TOKEN (required), CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
+DISCORD_BOT_TOKEN (required), GOOGLE_CHAT_ENABLED, GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CHAT_WEBHOOK_PORT, GOOGLE_CHAT_VERIFICATION_TOKEN, CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
 
 ## External Dependencies
 - `@anthropic-ai/claude-agent-sdk` — `query()` streaming interface.
 - `discord.js` v14 — guild + DM + thread + button interactions.
+- `google-auth-library` — service-account auth for Google Chat REST API.
 - Bun built-ins: `bun:sqlite`, `Bun.serve`, `Bun.file`.
 
 ## In-flight / known gaps
 - No tests (`bun test` not yet wired).
-- Telegram/Google Chat adapters not implemented.
-- ApprovalHandler tightly coupled to Discord — needs abstraction for other platforms.
+- Telegram adapter not implemented.
+- ApprovalHandler tightly coupled to Discord — needs abstraction for other platforms (Google Chat currently bypasses approvals).
+- Google Chat scheduler integration: schedules created from a Google Chat session would notify back via Discord sender — needs per-platform sender routing.

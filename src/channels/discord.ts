@@ -113,9 +113,11 @@ async function downloadRawAttachments(rawAttachments: any[]): Promise<Attachment
 /** Create a ReplySender for a sendable channel that supports image files. */
 function makeReplySender(channel: { send: Function }): ReplySender {
   return async (responseText: string, imageFiles?: string[]) => {
-    const chunks = splitMessage(responseText);
-    for (const chunk of chunks) {
-      await channel.send(chunk);
+    if (responseText) {
+      const chunks = splitMessage(responseText);
+      for (const chunk of chunks) {
+        await channel.send(chunk);
+      }
     }
 
     // Send image files as Discord attachments
