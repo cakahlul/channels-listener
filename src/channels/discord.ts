@@ -242,6 +242,26 @@ export class DiscordChannel implements Channel {
     }
   }
 
+  /** Send a message with an image attachment to a channel by ID (used by clock-automation evidence). */
+  async sendToChannelWithAttachment(channelId: string, text: string, filePath: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const file = Bun.file(filePath);
+      if (!(await file.exists())) {
+        logger.warn(`[discord] Attachment file not found, sending text only`, { filePath });
+        await this.sendToChannel(channelId, text);
+        return;
+      }
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !("send" in channel)) return;
+      const attachments = [new AttachmentBuilder(buffer, { name: basename(filePath) })];
+      await (channel as any).send({ content: text, files: attachments });
+    } catch (err) {
+      logger.error(`[discord] Failed to send message with attachment to ${channelId}:`, err);
+    }
+  }
+
   /** Send a DM to a user by ID (used by scheduler). */
   async sendDm(userId: string, text: string): Promise<void> {
     if (!this.client) return;

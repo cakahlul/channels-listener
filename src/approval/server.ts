@@ -2,18 +2,25 @@ import { logger } from "../utils/logger";
 import type { ApprovalHandler, ApprovalRequest } from "./handler";
 import type { ConfirmationHandler } from "./confirmation-handler";
 
+export interface NotifySender {
+  (channelId: string, text: string, filePath?: string): Promise<void>;
+}
+
 /**
  * Starts an HTTP server that receives approval requests from the Claude Code hook script.
  * The hook script POSTs the hook stdin JSON here, and this server forwards it to Discord
  * via the ApprovalHandler, then returns the decision.
  *
  * Also exposes /confirm for ad-hoc Yes/No DM confirmations from external callers
- * (e.g. the clcok-automation bot asking "Clock in now?").
+ * (e.g. the clock-automation bot asking "Clock in now?").
+ *
+ * Also exposes /notify for external bots to send messages + image attachments
+ * to a Discord channel (e.g. clock-automation sending evidence screenshots).
  */
 export function startApprovalServer(
   handler: ApprovalHandler,
   port: number,
-  opts?: { confirmationHandler?: ConfirmationHandler },
+  opts?: { confirmationHandler?: ConfirmationHandler; notifySender?: NotifySender },
 ): ReturnType<typeof Bun.serve> {
   const confirmationHandler = opts?.confirmationHandler;
   let counter = 0;
@@ -87,6 +94,47 @@ export function startApprovalServer(
             return Response.json(result);
           } catch (err) {
             logger.error("[approval-server] Error processing confirmation:", err);
+            return Response.json({ error: String(err) }, { status: 500 });
+          }
+        },
+      },
+      "/notify": {
+        POST: async (req) => {
+          const notify = opts?.notifySender;
+          if (!notify) {
+            return Response.json({ error: "Notify sender not configured" }, { status: 503 });
+          }
+          try {
+            const contentType = req.headers.get("content-type") || "";
+            let channelId: string;
+            let text: string;
+            let filePath: string | undefined;
+
+            if (contentType.includes("multipart/form-data")) {
+              const form = await req.formData();
+              channelId = (form.get("channelId") as string) || "";
+              text = (form.get("text") as string) || "";
+              filePath = (form.get("filePath") as string) || undefined;
+            } else {
+              const body = await req.json() as {
+                channelId?: string;
+                text?: string;
+                filePath?: string;
+              };
+              channelId = body.channelId || "";
+              text = body.text || "";
+              filePath = body.filePath;
+            }
+
+            if (!channelId || !text) {
+              return Response.json({ error: "channelId and text are required" }, { status: 400 });
+            }
+
+            logger.info(`[approval-server] Notify → channel ${channelId}: ${text.slice(0, 80)}`);
+            await notify(channelId, text, filePath);
+            return Response.json({ ok: true });
+          } catch (err) {
+            logger.error("[approval-server] Error processing notify:", err);
             return Response.json({ error: String(err) }, { status: 500 });
           }
         },

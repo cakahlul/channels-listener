@@ -56,7 +56,9 @@ const confirmationHandler = new ConfirmationHandler({
   client: discord.getClient(),
   timeoutMs: config.confirmTimeoutMs,
 });
-const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort, { confirmationHandler });
+const notifySender = (channelId: string, text: string, filePath?: string) =>
+  filePath ? discord.sendToChannelWithAttachment(channelId, text, filePath) : discord.sendToChannel(channelId, text);
+const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort, { confirmationHandler, notifySender });
 
 // Wire up the scheduler with Discord send functions and Claude bridge
 setScheduleMessageSender((channelId, text) => discord.sendToChannel(channelId, text));
