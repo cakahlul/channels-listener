@@ -12,6 +12,22 @@ function toDiscordChannelId(sessionKey: string): string {
   return sessionKey.startsWith("dm:") ? sessionKey.slice(3) : sessionKey;
 }
 
+const IMAGE_PATH_RE = /(?:^|\s)(\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:\s|$|[)\].,])/gim;
+
+async function extractExistingImagePaths(text: string): Promise<string[]> {
+  const paths: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = IMAGE_PATH_RE.exec(text)) !== null) {
+    const filePath = match[1]!;
+    try {
+      if (await Bun.file(filePath).exists()) {
+        paths.push(filePath);
+      }
+    } catch {}
+  }
+  return [...new Set(paths)];
+}
+
 export class Orchestrator {
   private bridge: ClaudeBridge;
   private sessions: SessionStore;
@@ -60,6 +76,12 @@ export class Orchestrator {
     if (scheduleResult === "ASYNC") return;
     if (scheduleResult) {
       await reply(scheduleResult);
+      return;
+    }
+
+    const requestedImagePaths = await extractExistingImagePaths(text);
+    if (requestedImagePaths.length > 0 && /\b(?:kirim|send|share|upload|tampil|tampilkan|gambar|image|screenshot)\b/i.test(text)) {
+      await reply("", requestedImagePaths);
       return;
     }
 
