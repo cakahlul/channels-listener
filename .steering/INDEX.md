@@ -13,21 +13,22 @@ Read this before any task. Update after any file add/remove/significant change.
 | Google Chat adapter | [src/channels/google-chat.ts](../src/channels/google-chat.ts) |
 | Message orchestration | [src/core/orchestrator.ts](../src/core/orchestrator.ts) |
 | Claude SDK bridge | [src/core/claude-bridge.ts](../src/core/claude-bridge.ts) |
+| Codex App Server bridge | [src/core/codex-bridge.ts](../src/core/codex-bridge.ts) |
 | Session storage (SQLite) | [src/core/session-store.ts](../src/core/session-store.ts) |
 | Approval system | [src/approval/handler.ts](../src/approval/handler.ts), [src/approval/server.ts](../src/approval/server.ts), [src/approval/session-registry.ts](../src/approval/session-registry.ts), [scripts/approval-hook.ts](../scripts/approval-hook.ts) |
 | Ad-hoc confirmation (DM Yes/No) | [src/approval/confirmation-handler.ts](../src/approval/confirmation-handler.ts), `POST /confirm` in [src/approval/server.ts](../src/approval/server.ts) |
 | Scheduler (cron + NL parse) | [src/services/scheduler.ts](../src/services/scheduler.ts) |
 | SQLite DB | [src/db/database.ts](../src/db/database.ts) |
 | Logging | [src/utils/logger.ts](../src/utils/logger.ts) |
-| Test/dev helpers | [scripts/test-dm.ts](../scripts/test-dm.ts) |
+| Tests / dev helpers | [src/config.test.ts](../src/config.test.ts), [src/core/codex-bridge.test.ts](../src/core/codex-bridge.test.ts), [src/approval/handler.test.ts](../src/approval/handler.test.ts), [src/services/scheduler.test.ts](../src/services/scheduler.test.ts), [scripts/test-dm.ts](../scripts/test-dm.ts) |
 
 ## File-by-file Logic
 
 ### [src/index.ts](../src/index.ts)
-Boot sequence: loadConfig → set log level → configure scheduler → build `SessionRegistry` + `Orchestrator` → instantiate each channel → start channels with `orchestrator.handle` handler → start `ApprovalHandler` + `startApprovalServer` → wire scheduler senders + claudeBridge → `startScheduler()`. SIGINT/SIGTERM → graceful shutdown.
+Boot sequence: loadConfig → set log level → configure scheduler → build `SessionRegistry` + `Orchestrator` → instantiate each channel → start channels with `orchestrator.handle` handler → start `ApprovalHandler` + `startApprovalServer` → wire scheduler senders + selected agent bridge → `startScheduler()`. SIGINT/SIGTERM → graceful shutdown.
 
 ### [src/config.ts](../src/config.ts)
-`Config` interface + `loadConfig()`. Validates `DISCORD_BOT_TOKEN`. Defaults: model=sonnet, maxTurns=25, sessionTtl=60min, maxConcurrent=5, approvalPort=7842, approvalTimeout=300s, dbPath=channels-listener.sqlite, schedulerTz=Asia/Jakarta, schedulerTick=60s, schedulerShellTimeout=600s, confirmTimeout=300s.
+`Config` interface + `loadConfig()`. Validates `DISCORD_BOT_TOKEN`, `PROVIDER`, Codex reasoning/approval/sandbox enums, and positive Codex timeout. Defaults: provider=claude, Claude model=sonnet, maxTurns=25, Codex model/reasoning=user config, Codex timeout=600s, sessionTtl=60min, maxConcurrent=5, approvalPort=7842, approvalTimeout=300s, dbPath=channels-listener.sqlite, schedulerTz=Asia/Jakarta, schedulerTick=60s, schedulerShellTimeout=600s, confirmTimeout=300s.
 
 ### [src/types/channel.ts](../src/types/channel.ts)
 Interfaces: `ChannelContext` (platform/sessionKey/channelId/userId/userName), `InboundMessage` (context+text+attachments+mentions), `ReplySender`, `StreamingReplier` (onDelta/flush), `Channel` (name/start/stop).
@@ -40,19 +41,22 @@ Interfaces: `ChannelContext` (platform/sessionKey/channelId/userId/userName), `I
 Helpers: `splitMessage` (2000 char chunks, newline-aware), `stripMention`, `downloadImageAttachments` / `downloadRawAttachments` (PNG/JPEG/GIF/WebP → base64), `makeReplySender` (text chunks + image attachments), `makeStreamingReplier` (1s flush interval, edits in place, splits on 2000-char overflow). Public methods: `getClient`, `sendToChannel`, `sendDm` (scheduler hooks).
 
 ### [src/channels/google-chat.ts](../src/channels/google-chat.ts)
-`GoogleChatChannel` impl. Runs its own `Bun.serve` on `googleChatWebhookPort` (default 7843) to receive Google Chat webhook POSTs. Uses `google-auth-library` (`chat.bot` scope) for service-account auth. Normalizes new (`raw.chat.messagePayload`) and legacy event shapes → MESSAGE / ADDED_TO_SPACE / REMOVED_FROM_SPACE. Session key = `${spaceName}::${threadName||"main"}`; channelId = `spaceName`. Reply sender posts text to `${CHAT_API}/{space}/messages` and Claude-created images to `${CHAT_API}/{space}/attachments:upload` (fallback sends local path if upload fails). Streaming via PATCH `updateMessage` (4096 char limit, 1.5s flush). Downloads image attachments via `media/{resource}?alt=media`, filters to PNG/JPEG/GIF/WebP. Webhook returns `{}` immediately and dispatches `onMessage` async to avoid Google Chat's response timeout. Enabled by `GOOGLE_CHAT_ENABLED=true` in env. No approval/scheduler integration yet — approvals remain Discord-only.
+`GoogleChatChannel` impl. Runs its own `Bun.serve` on `googleChatWebhookPort` (default 7843) to receive Google Chat webhook POSTs. Uses `google-auth-library` (`chat.bot` scope) for service-account auth. Normalizes new (`raw.chat.messagePayload`) and legacy event shapes → MESSAGE / ADDED_TO_SPACE / REMOVED_FROM_SPACE. Session key = `${spaceName}::${threadName||"main"}`; channelId = `spaceName`. Reply sender posts text to `${CHAT_API}/{space}/messages` and agent-created images to `${CHAT_API}/{space}/attachments:upload` (fallback sends local path if upload fails). Streaming via PATCH `updateMessage` (4096 char limit, 1.5s flush). Downloads image attachments via `media/{resource}?alt=media`, filters to PNG/JPEG/GIF/WebP. Webhook returns `{}` immediately and dispatches `onMessage` async to avoid Google Chat's response timeout. Enabled by `GOOGLE_CHAT_ENABLED=true` in env. No approval/scheduler integration yet — approvals remain Discord-only.
 
 ### [src/core/orchestrator.ts](../src/core/orchestrator.ts)
-`Orchestrator.handle()`: handles `/reset` command, dispatches schedule commands via `handleScheduleCommand`, short-circuits direct image send requests when the user message contains an existing absolute image path + send/show intent, enforces single in-flight per `platform:sessionKey`, registers session→channel mapping for approvals, invokes `ClaudeBridge.ask` with optional streamer, replies. `toDiscordChannelId` strips `dm:` prefix.
+`Orchestrator.handle()`: handles `/reset`, dispatches schedule commands, short-circuits direct image sends, enforces one in-flight request per channel session, registers provider session→channel approval routing, invokes the configured `AgentBridge`, and persists any provider-returned session/thread ID. Codex session keys use a `codex:` prefix so switching providers does not overwrite Claude sessions.
 
 ### [src/core/claude-bridge.ts](../src/core/claude-bridge.ts)
-`ClaudeBridge.ask()`: builds MessageParam (images + text), acquires `Semaphore` (maxConcurrent), calls SDK `query()` with `sessionId` (new) or `resume` (existing), streams `content_block_delta` text → `onTextDelta`, captures final `result` message. Extracts image paths from response text via `IMAGE_PATH_RE` and verifies existence via `Bun.file`. Returns `{ text, imageFiles }`.
+`AgentBridge` contract plus `ClaudeBridge`. `ClaudeBridge.ask()` builds image/text content, limits concurrency, calls SDK `query()` with `sessionId` or `resume`, streams text deltas, captures the final result and session ID, and returns verified generated image paths.
+
+### [src/core/codex-bridge.ts](../src/core/codex-bridge.ts)
+Persistent stdio JSON-RPC client for `codex app-server`. Performs initialize/initialized handshake, starts or resumes threads, applies model/reasoning overrides, streams agent text, forwards command/file approvals to Discord with change context, rejects unsupported blocking server requests, interrupts timed-out turns, rejects failed/interrupted turns, and restarts/resumes after child failure. Uses streaming UTF-8 decoding and inherited stderr to avoid pipe deadlocks.
 
 ### [src/core/session-store.ts](../src/core/session-store.ts)
-SQLite-backed `SessionStore` (table `sessions`, PK `(platform, session_key)`, `expires_at` epoch-ms). `get()` returns existing+refresh TTL via UPDATE, or inserts new UUID. `reset()` deletes row. Periodic `purgeExpired` sweep every 5 min plus lazy filter on `get()` (rows past `expires_at` treated as missing). No external service required.
+SQLite-backed `SessionStore` (table `sessions`, PK `(platform, session_key)`, `expires_at` epoch-ms). `get()` returns existing+refresh TTL or inserts a UUID; `setSessionId()` persists the provider-returned session/thread ID; `reset()` deletes the row. Periodic purge runs every 5 min plus lazy expiry on read.
 
 ### [src/approval/handler.ts](../src/approval/handler.ts)
-`ApprovalHandler.requestApproval()`: resolves channel via `SessionRegistry` (fallback to configured channel), renders rich embed via `formatToolInput` (per-tool formatters for Bash/Edit/Write/Read) + `toolMeta` (emoji+color map), posts Approve/Deny buttons, awaits button interaction OR timeout. Edits message to reflect outcome.
+`ApprovalHandler.requestApproval()`: resolves channel via `SessionRegistry` (fallback to configured channel), renders Bash/Edit/Write/Read details including Codex reason, working directory, network target, grant root, and proposed file changes, posts Approve/Deny buttons, then returns the interaction or timeout decision.
 
 ### [src/approval/server.ts](../src/approval/server.ts)
 `startApprovalServer(approvalHandler, port, { confirmationHandler? })`: `Bun.serve` on port (default 7842). Routes: `POST /approval` (hook approval), `POST /confirm` (ad-hoc DM Yes/No — body `{ userId, prompt, title?, timeoutMs? }` → `{ approved, decidedBy }`), `GET /health` (pendingApprovals + pendingConfirmations).
@@ -68,7 +72,7 @@ Claude Code PreToolUse hook (bun shebang). Reads stdin JSON. Auto-allows: `AUTO_
 
 ### [src/services/scheduler.ts](../src/services/scheduler.ts)
 SQLite-backed cron. Components:
-- **NL parser**: `parseScheduleWithClaude` — one-shot `query()` with strict JSON-only prompt → `{ cron, prompt, recurring, notify, directMessage }`.
+- **NL parser**: `parseScheduleWithAgent` — one-shot request through the selected `AgentBridge` with strict JSON-only prompt → `{ cron, prompt, recurring, notify, directMessage }`.
 - **Cron engine**: `parseCronField` (supports `*`, ranges, lists, steps `*/N`, `1-5/2`), `cronMatchesDate`, `dateInTimezone`, `describeCron` (human-readable), `nextRunTime` (48h forward search).
 - **CRUD**: prepared statements over `schedules` table. `createSchedule`/`getSchedule`/`listSchedulesByChannel`/`removeSchedule`/`setScheduleEnabled`.
 - **Execution**: `executeSchedule` — three modes by `executionMode`:
@@ -78,7 +82,7 @@ SQLite-backed cron. Components:
   Notify target → `sendDm` else `sendToChannel`. Auto-disables one-time after run.
 - **Tick loop**: `startScheduler` runs `tick()` every `schedulerTickMs` (60s default), de-dupes if last run < 90s ago, in-flight `Set` prevents overlap.
 - **Command handler**: `handleScheduleCommand` parses `schedule add|once|list|delete|pause|resume|shell <args>`, returns string or `"ASYNC"` for async add flow. `schedule shell "<cron>" [notify:self|notify:<userId>] [once] -- <command>` registers a shell-mode schedule synchronously.
-- **Injection**: `setScheduleMessageSender`, `setScheduleDmSender`, `setSchedulerClaudeBridge` wired from `index.ts`.
+- **Injection**: `setScheduleMessageSender`, `setScheduleDmSender`, `setSchedulerAgentBridge` wired from `index.ts`.
 
 ### [src/db/database.ts](../src/db/database.ts)
 `bun:sqlite` Database at `DB_PATH`. PRAGMA: WAL + foreign_keys. Creates `schedules` table on boot (id, channel_id, platform, cron_expression, prompt, timezone, created_by, created_by_id, recurring, direct_message, notify_user_id, notify_user_name, enabled, last_run_at, created_at, execution_mode, command). Idempotent `ALTER TABLE ADD COLUMN` runs for `execution_mode` + `command` so pre-existing DBs migrate on boot. Also creates `sessions` table (platform, session_key, session_id, expires_at; PK platform+session_key) with index on `expires_at` for purge sweeps.
@@ -89,17 +93,21 @@ Levels debug<info<warn<error. `setLogLevel`, `logger.{debug,info,warn,error}`. T
 ### [scripts/test-dm.ts](../scripts/test-dm.ts)
 Dev helper to test DM sending. (Not loaded by main app.)
 
+### Tests
+Built-in `bun:test` checks cover Codex resume/error/timeout/server-request/UTF-8 behavior, Codex config validation, approval detail rendering, and provider-neutral schedule parsing.
+
 ## Env Vars
-DISCORD_BOT_TOKEN (required), GOOGLE_CHAT_ENABLED, GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CHAT_WEBHOOK_PORT, GOOGLE_CHAT_VERIFICATION_TOKEN, CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
+DISCORD_BOT_TOKEN (required), PROVIDER, GOOGLE_CHAT_ENABLED, GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_CHAT_WEBHOOK_PORT, GOOGLE_CHAT_VERIFICATION_TOKEN, CLAUDE_WORK_DIR, CLAUDE_MODEL, CLAUDE_MAX_TURNS, CLAUDE_CODE_PATH, CODEX_PATH, CODEX_MODEL, CODEX_REASONING_EFFORT, CODEX_WORK_DIR, CODEX_APPROVAL_POLICY, CODEX_SANDBOX, CODEX_TIMEOUT_MS, SESSION_TTL_MINUTES, MAX_CONCURRENT_CLAUDE, LOG_LEVEL, APPROVAL_FALLBACK_CHANNEL_ID, APPROVAL_SERVER_PORT, APPROVAL_TIMEOUT_MS, DB_PATH, SCHEDULER_TIMEZONE, SCHEDULER_TICK_MS, SCHEDULER_SHELL_TIMEOUT_MS, CONFIRM_TIMEOUT_MS, APPROVAL_SERVER_URL (hook only), APPROVAL_HOOK_LOG (hook only).
 
 ## External Dependencies
 - `@anthropic-ai/claude-agent-sdk` — `query()` streaming interface.
 - `discord.js` v14 — guild + DM + thread + button interactions.
 - `google-auth-library` — service-account auth for Google Chat REST API.
+- Codex CLI — external executable used only when `PROVIDER=codex`; no npm dependency.
 - Bun built-ins: `bun:sqlite`, `Bun.serve`, `Bun.file`.
 
 ## In-flight / known gaps
-- No tests (`bun test` not yet wired).
 - Telegram adapter not implemented.
 - ApprovalHandler tightly coupled to Discord — needs abstraction for other platforms (Google Chat currently bypasses approvals).
+- Codex forwards command and file-change approvals; other App Server client requests are rejected as unsupported.
 - Google Chat scheduler integration: schedules created from a Google Chat session would notify back via Discord sender — needs per-platform sender routing.

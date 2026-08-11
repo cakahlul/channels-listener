@@ -7,9 +7,8 @@ export interface NotifySender {
 }
 
 /**
- * Starts an HTTP server that receives approval requests from the Claude Code hook script.
- * The hook script POSTs the hook stdin JSON here, and this server forwards it to Discord
- * via the ApprovalHandler, then returns the decision.
+ * Starts an HTTP server that receives approval requests from the Claude hook or Codex bridge,
+ * forwards them to Discord via ApprovalHandler, then returns the decision.
  *
  * Also exposes /confirm for ad-hoc Yes/No DM confirmations from external callers
  * (e.g. the clock-automation bot asking "Clock in now?").

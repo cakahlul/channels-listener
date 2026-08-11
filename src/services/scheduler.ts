@@ -1,6 +1,6 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "../db/database";
 import { logger } from "../utils/logger";
+import type { AgentBridge } from "../core/claude-bridge";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,7 +86,7 @@ const deleteSchedulesByChannel = db.query<void, [string]>(
 );
 
 // ---------------------------------------------------------------------------
-// Natural language → cron (via Claude)
+// Natural language → cron (via selected agent)
 // ---------------------------------------------------------------------------
 
 export interface ParsedScheduleInput {
@@ -95,27 +95,25 @@ export interface ParsedScheduleInput {
   recurring: boolean;
   /** "self" = DM the creator, a display name = DM that person, null = post in channel */
   notifyTarget: string | null;
-  /** true = just deliver the prompt text as-is (no Claude processing) */
+  /** true = just deliver the prompt text as-is (no agent processing) */
   directMessage: boolean;
 }
 
 let schedulerTimezone = "Asia/Jakarta";
 let schedulerTickMs = 60_000;
-let schedulerClaudeCodePath: string | undefined;
 let schedulerShellTimeoutMs = 600_000;
 
-export function configureScheduler(opts: { timezone?: string; tickMs?: number; claudeCodePath?: string; shellTimeoutMs?: number }) {
+export function configureScheduler(opts: { timezone?: string; tickMs?: number; shellTimeoutMs?: number }) {
   if (opts.timezone) schedulerTimezone = opts.timezone;
   if (opts.tickMs) schedulerTickMs = opts.tickMs;
-  if (opts.claudeCodePath) schedulerClaudeCodePath = opts.claudeCodePath;
   if (opts.shellTimeoutMs) schedulerShellTimeoutMs = opts.shellTimeoutMs;
 }
 
 /**
- * Spawn a one-shot Claude Code session to parse natural-language schedule
+ * Use a one-shot agent session to parse natural-language schedule
  * input into { cron, prompt, recurring }.
  */
-export async function parseScheduleWithClaude(rawInput: string): Promise<ParsedScheduleInput> {
+export async function parseScheduleWithAgent(rawInput: string): Promise<ParsedScheduleInput> {
   const now = new Date();
   const localNow = now.toLocaleString("en-US", {
     timeZone: schedulerTimezone,
@@ -132,7 +130,7 @@ export async function parseScheduleWithClaude(rawInput: string): Promise<ParsedS
 2. The task prompt or message content
 3. Whether this is recurring or one-time
 4. Who to notify/chat with the result (if mentioned)
-5. Whether this is a direct message delivery (just send the text as-is) or a task for Claude to process
+5. Whether this is a direct message delivery (just send the text as-is) or a task for the agent to process
 
 Current time: ${localNow} (${schedulerTimezone})
 
@@ -144,7 +142,7 @@ Rules:
 - If user says "chat @Someone" or "kirim ke @Someone" → set notify to that person's name
 - If no notification target mentioned → set notify to null (result stays in the channel)
 - directMessage=true when the user wants to SEND/DELIVER a specific message to someone (e.g. "kirim pesan ke X isinya Y", "send message to X saying Y"). The prompt should be the message content only.
-- directMessage=false when the user wants Claude to DO something (e.g. "summarize inbox", "check system health"). The prompt should describe the task.
+- directMessage=false when the user wants the agent to DO something (e.g. "summarize inbox", "check system health"). The prompt should describe the task.
 - The notify target name should NOT be included in the prompt
 - Respond ONLY with valid JSON, no markdown fences, no explanation
 
@@ -152,27 +150,8 @@ JSON format: {"cron":"<5 fields>","prompt":"<message or task>","recurring":<true
 
 User input: ${rawInput}`;
 
-  let resultText = "";
-
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), 60_000);
-
-  try {
-    for await (const message of query({
-      prompt,
-      options: {
-        maxTurns: 1,
-        abortController,
-        ...(schedulerClaudeCodePath ? { pathToClaudeCodeExecutable: schedulerClaudeCodePath } : {}),
-      } as any,
-    })) {
-      if ("result" in message) {
-        resultText = (message as any).result;
-      }
-    }
-  } finally {
-    clearTimeout(timeout);
-  }
+  if (!agentBridge) throw new Error("Scheduler agent bridge not configured");
+  const resultText = (await agentBridge.ask(prompt, crypto.randomUUID(), true, undefined, { maxTurns: 1 })).text;
 
   if (!resultText) {
     throw new Error("Empty response from schedule parser");
@@ -500,15 +479,13 @@ export function setScheduleDmSender(sender: ScheduleDmSender) {
 }
 
 // ---------------------------------------------------------------------------
-// Claude bridge reference — set by index.ts
+// Agent bridge reference — set by index.ts
 // ---------------------------------------------------------------------------
 
-import type { ClaudeBridge } from "../core/claude-bridge";
+let agentBridge: AgentBridge | null = null;
 
-let claudeBridge: ClaudeBridge | null = null;
-
-export function setSchedulerClaudeBridge(bridge: ClaudeBridge) {
-  claudeBridge = bridge;
+export function setSchedulerAgentBridge(bridge: AgentBridge) {
+  agentBridge = bridge;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +573,7 @@ async function executeSchedule(schedule: Schedule): Promise<void> {
       return;
     }
 
-    // --- Direct message mode: just deliver the text, no Claude ---
+    // --- Direct message mode: just deliver the text, no agent ---
     if (schedule.directMessage) {
       if (hasNotifyTarget && schedule.notifyUserId && sendDm) {
         await sendDm(schedule.notifyUserId, schedule.prompt);
@@ -621,9 +598,9 @@ async function executeSchedule(schedule: Schedule): Promise<void> {
       return;
     }
 
-    // --- Task mode: invoke Claude and deliver the result ---
-    if (!claudeBridge) {
-      logger.error("Claude bridge not configured for scheduler");
+    // --- Task mode: invoke the configured agent and deliver the result ---
+    if (!agentBridge) {
+      logger.error("Agent bridge not configured for scheduler");
       return;
     }
 
@@ -636,7 +613,7 @@ async function executeSchedule(schedule: Schedule): Promise<void> {
 
     // Create a unique session for this schedule
     const sessionId = crypto.randomUUID();
-    const result = await claudeBridge.ask(schedule.prompt, sessionId, true);
+    const result = await agentBridge.ask(schedule.prompt, sessionId, true);
 
     // Send result to DM or channel
     if (hasNotifyTarget && schedule.notifyUserId && sendDm) {
@@ -948,7 +925,7 @@ async function handleScheduleAdd(
 ): Promise<void> {
   await sendFn("🔍 Parsing your schedule...");
 
-  const parsed = await parseScheduleWithClaude(rawInput);
+  const parsed = await parseScheduleWithAgent(rawInput);
 
   let notifyUserId: string | null = null;
   let notifyUserName: string | null = null;
@@ -993,7 +970,7 @@ async function handleScheduleAdd(
     ? next.toLocaleString("en-US", { timeZone: schedule.timezone, dateStyle: "medium", timeStyle: "short" })
     : "—";
   const typeLabel = schedule.recurring ? "🔁 Recurring" : "1️⃣ One-time";
-  const modeLabel = schedule.directMessage ? "✉️ Direct message" : "🤖 Claude task";
+  const modeLabel = schedule.directMessage ? "✉️ Direct message" : "🤖 Agent task";
   let notifyLabel: string;
   if (notifyUserId && notifyUserName) {
     notifyLabel = `💬 Notify: ${notifyUserName} ✅`;

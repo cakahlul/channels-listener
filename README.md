@@ -1,8 +1,8 @@
 # channels-listener
 
-A Bun application that bridges chat platforms to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI. Messages from any connected chat platform are forwarded to Claude Code as a subprocess, and responses are sent back through the originating platform.
+A Bun application that connects Discord and Google Chat to either Claude Code or Codex. Set `PROVIDER=claude` for the Claude Agent SDK or `PROVIDER=codex` for the local [Codex App Server](https://developers.openai.com/codex/app-server/).
 
-Set `PROVIDER=codex` to use the installed local `codex app-server --stdio` (JSON-RPC sessions, streaming, image input, and approval prompts). Missing or unknown values retain Claude behavior. `CODEX_PATH`, `CODEX_MODEL`, `CODEX_WORK_DIR`, `CODEX_APPROVAL_POLICY` (`untrusted`, `on-request`, `never`), `CODEX_SANDBOX` (`read-only`, `workspace-write`, `danger-full-access`), and `CODEX_TIMEOUT_MS` are optional. Codex still reads its normal user/project configuration; its App Server does not expose the CLI `--profile` flag.
+Both providers support persistent conversations, streaming text, image input, concurrency limits, and the scheduler. Codex command and file-change approvals are forwarded to Discord; unsupported App Server requests fail immediately instead of leaving turns blocked.
 
 Designed to run on a VPS with Cloudflare Tunnel (`cloudflared`) for secure exposure.
 
@@ -21,13 +21,15 @@ Designed to run on a VPS with Cloudflare Tunnel (`cloudflared`) for secure expos
               └──────┬──────┘
                      │
               ┌──────▼──────┐
-              │ Claude Bridge│  ← spawns `claude --print --resume <id>`
+              │ Agent Bridge │
               └──────┬──────┘
                      │
-              ┌──────▼──────┐
-              │  Claude Code │  ← CLI subprocess
-              │     (CLI)    │
-              └──────────────┘
+          ┌──────────┴──────────┐
+          │                     │
+   ┌──────▼──────┐       ┌──────▼──────┐
+   │ Claude SDK  │       │ Codex App   │
+   │             │       │ Server      │
+   └─────────────┘       └─────────────┘
 
               ┌──────────────┐
               │   SQLite     │  ← session persistence (TTL) + schedules
@@ -38,8 +40,8 @@ Designed to run on a VPS with Cloudflare Tunnel (`cloudflared`) for secure expos
 
 1. A **channel adapter** (e.g. Discord) receives a message from a user
 2. The **orchestrator** looks up or creates a session for that user
-3. The **Claude Bridge** spawns `claude --print --resume <sessionId>` as a subprocess
-4. Claude's response flows back through the orchestrator to the channel adapter
+3. The orchestrator calls the configured **agent bridge**
+4. The selected provider's response flows back to the channel adapter
 5. The adapter sends the reply using the platform's API
 
 ### Project structure
@@ -51,11 +53,13 @@ src/
 ├── types/
 │   └── channel.ts            # Channel interface definition
 ├── core/
-│   ├── orchestrator.ts       # Routes messages → Claude → replies
-│   ├── claude-bridge.ts      # Spawns claude CLI subprocess per message
+│   ├── orchestrator.ts       # Routes messages → selected agent → replies
+│   ├── claude-bridge.ts      # Claude Agent SDK bridge
+│   ├── codex-bridge.ts       # Persistent Codex App Server JSON-RPC bridge
 │   └── session-store.ts      # Maps user/channel → session ID in SQLite with TTL
 ├── channels/
-│   └── discord.ts            # Discord adapter (mentions + DMs)
+│   ├── discord.ts            # Discord adapter (mentions + DMs)
+│   └── google-chat.ts        # Google Chat webhook adapter
 └── utils/
     └── logger.ts             # Structured logging with levels
 ```
@@ -68,7 +72,7 @@ No coding background? Follow these steps end-to-end and you'll have the bot runn
 
 1. A **terminal** app (already on your computer)
 2. **Bun** — the engine that runs the app
-3. **Claude Code CLI** — Anthropic's command-line tool (requires a Claude account)
+3. **Claude Code or Codex CLI** — install and sign in to the provider you want to use
 4. A **Discord bot token** — free, takes ~5 minutes to create
 
 Sessions and schedules are stored in a local **SQLite** file (`channels-listener.sqlite`) that's created automatically on first run — no separate database to install.
@@ -98,7 +102,11 @@ bun --version
 ```
 You should see a version number (e.g. `1.1.x`).
 
-### Step 3 — Install Claude Code CLI
+### Step 3 — Install an agent CLI
+
+Choose one provider.
+
+**Claude Code (default):**
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -110,6 +118,15 @@ Then log in to your Claude account:
 claude
 ```
 Follow the prompts in your browser to authenticate, then type `/exit` to close it.
+
+**Codex:**
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex
+```
+
+Sign in when prompted, then exit Codex. Set `PROVIDER=codex` in `.env` during Step 7.
 
 ### Step 4 — Create a Discord bot
 
@@ -146,7 +163,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Paste your Discord bot token in the `DISCORD_BOT_TOKEN=` line. Save and close.
+Paste your Discord bot token in the `DISCORD_BOT_TOKEN=` line. Keep `PROVIDER=claude`, or change it to `PROVIDER=codex` if you installed Codex. Save and close.
 
 ### Step 8 — Run the bot
 
@@ -162,6 +179,7 @@ You should see log messages like `Discord channel started`. Open Discord, mentio
 |---|---|
 | `command not found: bun` | Close and reopen the terminal. If still missing, re-run the Bun install step. |
 | `claude: command not found` | Re-run `npm install -g @anthropic-ai/claude-code`. On Mac, you may need `sudo`. |
+| `codex: command not found` | Re-run the Codex installer, reopen the terminal, or set `CODEX_PATH` to the executable's absolute path. |
 | Bot is online but doesn't reply | Make sure **Message Content Intent** is enabled in the Discord Developer Portal (Bot tab → Privileged Gateway Intents). |
 | `DISCORD_BOT_TOKEN is required` | Open `.env` again and confirm the token is pasted without quotes or extra spaces. |
 
@@ -170,7 +188,7 @@ You should see log messages like `Discord channel started`. Open Discord, mentio
 ## Prerequisites
 
 - [Bun](https://bun.sh) runtime installed
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://developers.openai.com/codex/cli/) installed and authenticated
 - A Discord bot token (see [Discord Setup](#discord-setup))
 
 Sessions and schedules are persisted to a local SQLite file (`channels-listener.sqlite`) created on first run.
@@ -192,13 +210,24 @@ cp .env.example .env
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | Yes | — | Discord bot token |
-| `CLAUDE_WORK_DIR` | No | `process.cwd()` | Working directory for Claude Code subprocess |
+| `PROVIDER` | No | `claude` | Agent provider: `claude` or `codex`; invalid values fail startup |
+| `CLAUDE_WORK_DIR` | No | current directory | Claude working directory |
 | `CLAUDE_MODEL` | No | `sonnet` | Claude model to use |
 | `CLAUDE_MAX_TURNS` | No | `25` | Max agentic turns per message |
+| `CLAUDE_CODE_PATH` | No | `claude` on `PATH` | Claude executable path |
+| `CODEX_PATH` | No | `codex` on `PATH` | Codex executable path |
+| `CODEX_MODEL` | No | Codex configuration | Optional model override |
+| `CODEX_REASONING_EFFORT` | No | Codex configuration | Optional effort override: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (model-dependent) |
+| `CODEX_WORK_DIR` | No | `CLAUDE_WORK_DIR`, then current directory | Codex working directory |
+| `CODEX_APPROVAL_POLICY` | No | Codex configuration | `untrusted`, `on-request`, or `never` |
+| `CODEX_SANDBOX` | No | Codex configuration | `read-only`, `workspace-write`, or `danger-full-access` |
+| `CODEX_TIMEOUT_MS` | No | `600000` | Codex turn timeout; timed-out turns are interrupted |
 | `DB_PATH` | No | `channels-listener.sqlite` | SQLite file for sessions + schedules |
 | `SESSION_TTL_MINUTES` | No | `60` | Session expiry in SQLite (minutes) |
-| `MAX_CONCURRENT_CLAUDE` | No | `5` | Max concurrent Claude processes |
+| `MAX_CONCURRENT_CLAUDE` | No | `5` | Max concurrent agent requests for either provider |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
+
+Codex model, reasoning, approval, and sandbox overrides are optional. When omitted, App Server uses normal Codex user/project configuration. `CLAUDE_MAX_TURNS` applies only to Claude; Codex uses `CODEX_TIMEOUT_MS` as this app's turn bound.
 
 ## Running
 
@@ -224,7 +253,7 @@ bun run dev
 
 ### Usage in Discord
 
-- **Mention the bot in a channel**: `@BotName what is the weather today?` → creates a new thread with its own Claude session
+- **Mention the bot in a channel**: `@BotName what is the weather today?` → creates a new thread with its own agent session
 - **Reply in a thread**: Any user can continue the conversation inside the thread (shared session)
 - **DM the bot**: Send a direct message (no mention needed, per-user session)
 - **Reset conversation**: Type `/reset` in a thread or DM to start a fresh session
@@ -252,7 +281,7 @@ For running channels-listener as a systemd service on the VPS:
 ```ini
 # /etc/systemd/system/channels-listener.service
 [Unit]
-Description=Channels Listener - Chat to Claude Code Bridge
+Description=Channels Listener - Chat to Agent Bridge
 After=network.target
 
 [Service]
@@ -363,7 +392,7 @@ const channels: Channel[] = [
 ];
 ```
 
-That's it. The orchestrator, session management, and Claude Bridge work automatically for any registered channel.
+That's it. The orchestrator, session management, and selected agent bridge work automatically for any registered channel.
 
 ### Key considerations when building an adapter
 
@@ -374,21 +403,21 @@ That's it. The orchestrator, session management, and Claude Bridge work automati
 | **Activation trigger** | Decide when the bot responds: mentions, DMs, slash commands, all messages, etc. |
 | **Typing indicators** | Show a typing/processing indicator before calling `onMessage` for better UX |
 | **Webhook vs. polling** | Some platforms (Telegram, Google Chat) support webhooks — use Cloudflare Tunnel to expose the endpoint. Others (Discord) use a persistent WebSocket |
-| **Platform-specific formatting** | Convert Claude's Markdown output if the platform uses different formatting (e.g. Telegram uses HTML or its own Markdown variant) |
+| **Platform-specific formatting** | Convert agent Markdown output if the platform uses different formatting (e.g. Telegram uses HTML or its own Markdown variant) |
 
 ### Planned channels
 
 - [x] Discord
 - [ ] Telegram
-- [ ] Google Chat
+- [x] Google Chat
 - [ ] WhatsApp (via WhatsApp Business API)
 - [ ] iMessage (via AppleScript bridge on macOS or Beeper)
 
 ## Features
 
-- **Session continuity** — each user gets a persistent Claude conversation via `--resume`, stored in SQLite
-- **Session persistence** — sessions survive app restarts; expired rows are purged lazily on read and via a periodic sweep
-- **Concurrency control** — configurable max concurrent Claude processes with queuing
+- **Session continuity** — each user gets a provider-specific conversation; Claude session IDs and Codex thread IDs are stored in SQLite
+- **Session persistence** — sessions resume after app or Codex App Server restarts; expired rows are purged lazily and periodically
+- **Concurrency control** — configurable max concurrent agent requests with queuing
 - **In-flight dedup** — prevents double-processing when a user sends multiple messages quickly
 - **Graceful shutdown** — clean disconnect from all platforms on SIGINT/SIGTERM
 - **Extensible** — add a new platform by implementing one interface

@@ -1,7 +1,7 @@
 import type { Config } from "../config";
 import type { InboundMessage, ReplySender, StreamingReplierFactory } from "../types/channel";
 import type { SessionRegistry } from "../approval/session-registry";
-import { ClaudeBridge } from "./claude-bridge";
+import { ClaudeBridge, type AgentBridge } from "./claude-bridge";
 import { CodexBridge } from "./codex-bridge";
 import { SessionStore } from "./session-store";
 import { logger } from "../utils/logger";
@@ -30,14 +30,15 @@ async function extractExistingImagePaths(text: string): Promise<string[]> {
 }
 
 export class Orchestrator {
-  private bridge: ClaudeBridge;
+  private bridge: AgentBridge;
   private sessions: SessionStore;
   private registry: SessionRegistry;
+  private provider: Config["provider"];
   /** Track in-flight requests per session to prevent double-sends. */
   private inFlight = new Set<string>();
 
-  /** Expose the bridge so the scheduler can invoke Claude. */
-  getBridge(): ClaudeBridge {
+  /** Expose the selected bridge for scheduled agent tasks. */
+  getBridge(): AgentBridge {
     return this.bridge;
   }
 
@@ -45,7 +46,7 @@ export class Orchestrator {
     this.bridge = config.provider === "codex" ? new CodexBridge({
       maxConcurrent: config.maxConcurrentClaude,
       model: config.codexModel,
-      maxTurns: config.claudeMaxTurns,
+      reasoningEffort: config.codexReasoningEffort,
       workDir: config.codexWorkDir,
       codexCodePath: config.codexCodePath,
       approvalPort: config.approvalServerPort,
@@ -61,15 +62,17 @@ export class Orchestrator {
     });
     this.sessions = new SessionStore(config.sessionTtlMinutes);
     this.registry = registry;
+    this.provider = config.provider;
   }
 
   async handle(msg: InboundMessage, reply: ReplySender, createStreamer?: StreamingReplierFactory): Promise<void> {
     const { context, text } = msg;
     const flightKey = `${context.platform}:${context.sessionKey}`;
+    const storedSessionKey = this.provider === "codex" ? `codex:${context.sessionKey}` : context.sessionKey;
 
     // Handle special commands
     if (text.trim().toLowerCase() === "/reset") {
-      await this.sessions.reset(context.platform, context.sessionKey);
+      await this.sessions.reset(context.platform, storedSessionKey);
       await reply("Session reset. Starting fresh conversation.");
       return;
     }
@@ -104,9 +107,9 @@ export class Orchestrator {
     this.inFlight.add(flightKey);
 
     try {
-      const session = await this.sessions.get(context.platform, context.sessionKey);
+      const session = await this.sessions.get(context.platform, storedSessionKey);
 
-      // Map the Claude session UUID to the Discord channel so approvals land here
+      // Map the provider session ID to the Discord channel so approvals land here
       if (context.platform === "discord") {
         this.registry.register(session.sessionId, toDiscordChannelId(context.sessionKey));
       }
@@ -129,6 +132,10 @@ export class Orchestrator {
           : undefined,
       );
 
+      if (response.sessionId !== session.sessionId) {
+        await this.sessions.setSessionId(context.platform, storedSessionKey, response.sessionId);
+      }
+
       logger.info(`[${context.platform}] Reply to ${context.userName}: ${response.text.slice(0, 100)}${response.text.length > 100 ? "..." : ""} (${response.imageFiles.length} images)`);
 
       // If we streamed, only send images (text was already streamed).
@@ -148,5 +155,6 @@ export class Orchestrator {
 
   destroy(): void {
     this.sessions.destroy();
+    this.bridge.destroy?.();
   }
 }

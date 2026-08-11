@@ -12,7 +12,7 @@ import {
   configureScheduler,
   setScheduleMessageSender,
   setScheduleDmSender,
-  setSchedulerClaudeBridge,
+  setSchedulerAgentBridge,
   startScheduler,
   stopScheduler,
 } from "./services/scheduler";
@@ -24,7 +24,6 @@ setLogLevel(config.logLevel);
 configureScheduler({
   timezone: config.schedulerTimezone,
   tickMs: config.schedulerTickMs,
-  claudeCodePath: config.claudeCodePath,
   shellTimeoutMs: config.schedulerShellTimeoutMs,
 });
 
@@ -60,10 +59,10 @@ const notifySender = (channelId: string, text: string, filePath?: string) =>
   filePath ? discord.sendToChannelWithAttachment(channelId, text, filePath) : discord.sendToChannel(channelId, text);
 const approvalServer = startApprovalServer(approvalHandler, config.approvalServerPort, { confirmationHandler, notifySender });
 
-// Wire up the scheduler with Discord send functions and Claude bridge
+// Wire up the scheduler with Discord send functions and selected agent bridge
 setScheduleMessageSender((channelId, text) => discord.sendToChannel(channelId, text));
 setScheduleDmSender((userId, text) => discord.sendDm(userId, text));
-setSchedulerClaudeBridge(orchestrator.getBridge());
+setSchedulerAgentBridge(orchestrator.getBridge());
 startScheduler();
 
 logger.info(`channels-listener running with ${channels.length} channel(s)`);

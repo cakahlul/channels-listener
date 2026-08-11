@@ -281,7 +281,7 @@ export class GoogleChatChannel implements Channel {
 
         const event = this.normalize(raw);
         if (event.type === "ADDED_TO_SPACE") {
-          return Response.json({ text: "Hi! Mention me or DM me and I'll process via Claude Code." });
+          return Response.json({ text: "Hi! Mention me or DM me and I'll process via the configured agent." });
         }
         if (event.type !== "MESSAGE" || !event.message) {
           return Response.json({});

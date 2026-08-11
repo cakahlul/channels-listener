@@ -11,17 +11,30 @@ export interface Attachment {
 
 export interface BridgeResponse {
   text: string;
-  /** Absolute paths to image files Claude created during this turn */
+  /** Absolute paths to image files the agent created during this turn */
   imageFiles: string[];
+  /** Provider session/thread ID to persist for the next message. */
+  sessionId: string;
 }
 
-interface AskOptions {
+export interface AskOptions {
   model?: string;
   maxTurns?: number;
   /** Called with each text delta during streaming. */
   onTextDelta?: (delta: string) => void;
   /** Called when the stream is complete (before image extraction). */
   onStreamEnd?: () => Promise<void>;
+}
+
+export interface AgentBridge {
+  ask(
+    prompt: string,
+    sessionId: string,
+    isNewSession: boolean,
+    attachments?: Attachment[],
+    opts?: AskOptions,
+  ): Promise<BridgeResponse>;
+  destroy?(): void;
 }
 
 /** Semaphore to limit concurrent Claude processes. */
@@ -54,7 +67,7 @@ class Semaphore {
 /** Regex to find image file paths in Claude's response text. */
 const IMAGE_PATH_RE = /(?:^|\s)(\/[^\s]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:\s|$|[)\].,])/gim;
 
-export class ClaudeBridge {
+export class ClaudeBridge implements AgentBridge {
   private semaphore: Semaphore;
   private defaultModel: string;
   private defaultMaxTurns: number;
@@ -175,7 +188,7 @@ export class ClaudeBridge {
         } catch {}
       }
 
-      return { text: resultText, imageFiles };
+      return { text: resultText, imageFiles, sessionId: finalSessionId };
     } finally {
       this.semaphore.release();
     }

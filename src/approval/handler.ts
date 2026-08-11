@@ -25,19 +25,32 @@ export interface ApprovalResult {
 }
 
 /** Formats tool input into a readable string for the embed. */
-function formatToolInput(toolName: string, input: Record<string, unknown>): string {
+export function formatToolInput(toolName: string, input: Record<string, unknown>): string {
   switch (toolName) {
     case "Bash": {
       const cmd = input.command as string | undefined;
-      return cmd ? `\`\`\`sh\n${cmd.slice(0, 900)}\n\`\`\`` : "_(no command)_";
+      const cwd = input.cwd as string | undefined;
+      const reason = input.reason as string | undefined;
+      const network = input.networkApprovalContext;
+      let out = reason ? `**Reason:** ${reason.slice(0, 300)}\n` : "";
+      if (cwd) out += `**Working directory:** \`${cwd}\`\n`;
+      if (network) out += `**Network:** \`${JSON.stringify(network).slice(0, 500)}\`\n`;
+      if (cmd) out += `\`\`\`sh\n${cmd.slice(0, 900)}\n\`\`\``;
+      return out || "_(no command)_";
     }
     case "Edit": {
       const file = input.file_path as string | undefined;
       const old = input.old_string as string | undefined;
       const replacement = input.new_string as string | undefined;
-      let out = file ? `**File:** \`${file}\`\n` : "";
+      const reason = input.reason as string | undefined;
+      const grantRoot = input.grantRoot as string | undefined;
+      const changes = input.changes;
+      let out = reason ? `**Reason:** ${reason.slice(0, 300)}\n` : "";
+      if (grantRoot) out += `**Grant root:** \`${grantRoot}\`\n`;
+      if (file) out += `**File:** \`${file}\`\n`;
       if (old) out += `**Replace:**\n\`\`\`\n${old.slice(0, 400)}\n\`\`\`\n`;
       if (replacement) out += `**With:**\n\`\`\`\n${replacement.slice(0, 400)}\n\`\`\``;
+      if (changes) out += `**Changes:**\n\`\`\`json\n${JSON.stringify(changes, null, 2).slice(0, 1200)}\n\`\`\``;
       return out || "_(no details)_";
     }
     case "Write": {
@@ -147,7 +160,7 @@ export class ApprovalHandler {
     );
 
     const message = await channel.send({
-      content: "🔔 **Claude Code needs your approval!**",
+      content: "🔔 **The agent needs your approval!**",
       embeds: [embed],
       components: [row],
     });
@@ -184,8 +197,8 @@ export class ApprovalHandler {
 
         message.edit({
           content: decided
-            ? "✅ **Approved** — Claude is proceeding."
-            : "❌ **Denied** — Claude was told no.",
+            ? "✅ **Approved** — the agent is proceeding."
+            : "❌ **Denied** — the agent was told no.",
           embeds: [updatedEmbed],
           components: [],
         }).catch(() => {});
@@ -218,8 +231,8 @@ export class ApprovalHandler {
 
     await interaction.reply({
       content: decision === "allow"
-        ? `✅ **${userName}** approved the action! Claude is on it.`
-        : `❌ **${userName}** denied the action. Claude has been stopped.`,
+        ? `✅ **${userName}** approved the action! The agent is proceeding.`
+        : `❌ **${userName}** denied the action. The agent was stopped.`,
       ephemeral: false,
     });
 

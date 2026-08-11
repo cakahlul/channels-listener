@@ -29,6 +29,10 @@ export class SessionStore {
     "UPDATE sessions SET expires_at = ? WHERE platform = ? AND session_key = ?",
   );
 
+  private updateSessionIdStmt = db.query(
+    "UPDATE sessions SET session_id = ? WHERE platform = ? AND session_key = ?",
+  );
+
   private deleteStmt = db.query(
     "DELETE FROM sessions WHERE platform = ? AND session_key = ?",
   );
@@ -59,6 +63,10 @@ export class SessionStore {
   async reset(platform: string, sessionKey: string): Promise<void> {
     this.deleteStmt.run(platform, sessionKey);
     logger.debug(`Session reset: ${platform}:${sessionKey}`);
+  }
+
+  async setSessionId(platform: string, sessionKey: string, sessionId: string): Promise<void> {
+    this.updateSessionIdStmt.run(sessionId, platform, sessionKey);
   }
 
   destroy(): void {
