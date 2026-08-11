@@ -1,4 +1,5 @@
 export interface Config {
+  provider: "claude" | "codex";
   discordBotToken: string;
   googleChatEnabled: boolean;
   googleChatCredentialsPath: string;
@@ -8,6 +9,12 @@ export interface Config {
   claudeModel: string;
   claudeMaxTurns: number;
   claudeCodePath?: string;
+  codexCodePath?: string;
+  codexModel: string;
+  codexWorkDir: string;
+  codexApprovalPolicy?: "untrusted" | "on-request" | "never";
+  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  codexTimeoutMs: number;
   sessionTtlMinutes: number;
   maxConcurrentClaude: number;
   logLevel: string;
@@ -27,7 +34,11 @@ export function loadConfig(): Config {
     throw new Error("DISCORD_BOT_TOKEN is required");
   }
 
+  const codexApprovalPolicy = process.env.CODEX_APPROVAL_POLICY;
+  const codexSandbox = process.env.CODEX_SANDBOX;
+
   return {
+    provider: process.env.PROVIDER === "codex" ? "codex" : "claude",
     discordBotToken,
     googleChatEnabled: process.env.GOOGLE_CHAT_ENABLED === "true",
     googleChatCredentialsPath: process.env.GOOGLE_APPLICATION_CREDENTIALS || "./credentials.json",
@@ -37,6 +48,12 @@ export function loadConfig(): Config {
     claudeModel: process.env.CLAUDE_MODEL || "sonnet",
     claudeMaxTurns: parseInt(process.env.CLAUDE_MAX_TURNS || "25", 10),
     claudeCodePath: process.env.CLAUDE_CODE_PATH,
+    codexCodePath: process.env.CODEX_PATH,
+    codexModel: process.env.CODEX_MODEL || "gpt-5",
+    codexWorkDir: process.env.CODEX_WORK_DIR || process.env.CLAUDE_WORK_DIR || process.cwd(),
+    codexApprovalPolicy: codexApprovalPolicy === "untrusted" || codexApprovalPolicy === "on-request" || codexApprovalPolicy === "never" ? codexApprovalPolicy : undefined,
+    codexSandbox: codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access" ? codexSandbox : undefined,
+    codexTimeoutMs: parseInt(process.env.CODEX_TIMEOUT_MS || "600000", 10),
     sessionTtlMinutes: parseInt(process.env.SESSION_TTL_MINUTES || "60", 10),
     maxConcurrentClaude: parseInt(process.env.MAX_CONCURRENT_CLAUDE || "5", 10),
     logLevel: process.env.LOG_LEVEL || "info",

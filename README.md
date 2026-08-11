@@ -2,6 +2,8 @@
 
 A Bun application that bridges chat platforms to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI. Messages from any connected chat platform are forwarded to Claude Code as a subprocess, and responses are sent back through the originating platform.
 
+Set `PROVIDER=codex` to use the installed local `codex app-server --stdio` (JSON-RPC sessions, streaming, image input, and approval prompts). Missing or unknown values retain Claude behavior. `CODEX_PATH`, `CODEX_MODEL`, `CODEX_WORK_DIR`, `CODEX_APPROVAL_POLICY` (`untrusted`, `on-request`, `never`), `CODEX_SANDBOX` (`read-only`, `workspace-write`, `danger-full-access`), and `CODEX_TIMEOUT_MS` are optional. Codex still reads its normal user/project configuration; its App Server does not expose the CLI `--profile` flag.
+
 Designed to run on a VPS with Cloudflare Tunnel (`cloudflared`) for secure exposure.
 
 ## Architecture

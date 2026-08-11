@@ -2,6 +2,7 @@ import type { Config } from "../config";
 import type { InboundMessage, ReplySender, StreamingReplierFactory } from "../types/channel";
 import type { SessionRegistry } from "../approval/session-registry";
 import { ClaudeBridge } from "./claude-bridge";
+import { CodexBridge } from "./codex-bridge";
 import { SessionStore } from "./session-store";
 import { logger } from "../utils/logger";
 import { handleScheduleCommand, type ScheduleCommandContext } from "../services/scheduler";
@@ -41,7 +42,17 @@ export class Orchestrator {
   }
 
   constructor(config: Config, registry: SessionRegistry) {
-    this.bridge = new ClaudeBridge({
+    this.bridge = config.provider === "codex" ? new CodexBridge({
+      maxConcurrent: config.maxConcurrentClaude,
+      model: config.codexModel,
+      maxTurns: config.claudeMaxTurns,
+      workDir: config.codexWorkDir,
+      codexCodePath: config.codexCodePath,
+      approvalPort: config.approvalServerPort,
+      approvalPolicy: config.codexApprovalPolicy,
+      sandbox: config.codexSandbox,
+      timeoutMs: config.codexTimeoutMs,
+    }) : new ClaudeBridge({
       maxConcurrent: config.maxConcurrentClaude,
       model: config.claudeModel,
       maxTurns: config.claudeMaxTurns,
